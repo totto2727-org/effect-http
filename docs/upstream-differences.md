@@ -1,0 +1,60 @@
+# Upstream differences
+
+## Comparison baseline
+
+| Role                                         | Repository                                                                                      | Exact revision                                       |
+| -------------------------------------------- | ----------------------------------------------------------------------------------------------- | ---------------------------------------------------- |
+| Behavioral upstream                          | [honojs/hono](https://github.com/honojs/hono)                                                   | `f6fbaf0299c48eea9e656e03e2ffe7ac755e8823` (4.13.18) |
+| Effect comparison and development dependency | [Effect-TS/effect](https://github.com/Effect-TS/effect)                                         | `3e2030b43e86a60113f2f32671076ff3b1d84ce4` (4.1.4)   |
+| Library scaffold                             | [totto2727-org/template-vite-plus-lib](https://github.com/totto2727-org/template-vite-plus-lib) | `93c04d34cbb70971ea1db6790980d22f55ed095e`           |
+
+Hono is the behavioral upstream for selected helpers and middleware policies.
+This repository starts from the Vite library template, not from Hono's Git history.
+It does not contain a modified Hono router or a nested Hono runtime.
+The Git remote `upstream` points to `https://github.com/honojs/hono.git`.
+The Git remote `origin` points to `https://github.com/totto2727-org/effect-http.git`.
+
+The [feature disposition table](./hono-compatibility.md) records every built-in middleware and helper in the comparison baseline.
+It distinguishes missing HTTP policies from functions that Effect already covers and Hono-specific functions that this package excludes.
+The upstream license is retained in [NOTICE](../NOTICE).
+
+## Purpose and affected areas
+
+This package supplies standalone HTTP policy logic and thin Effect adapters.
+It does not provide Hono API compatibility or a second HTTP framework.
+Effect remains the only runtime peer dependency.
+Hono is not installed or bundled.
+
+| Area                     | Hono baseline                                         | Retained difference and operational impact                                                                                                                                                                                                                                                                                                                                                |
+| ------------------------ | ----------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Content negotiation      | `src/helper/accepts` and `src/utils/accept.ts`        | Parsing and matching are public outside middleware. String input, request headers, and Effect request access use the same policy. A missing match is explicit instead of returning a possibly forbidden default. Quality-zero exclusions and malformed input cannot silently become accepted values.                                                                                      |
+| Language selection       | `src/middleware/language`                             | Only reusable header negotiation belongs here. Query, cookie, and path precedence remain application policy. There is no Hono Context variable or language-cookie lifecycle.                                                                                                                                                                                                              |
+| Cache-Control            | `src/middleware/cache`                                | Parsing and formatting are reusable APIs. Invalid or conflicting policy is handled conservatively. This is part of HTTP response caching, not a separate cache framework.                                                                                                                                                                                                                 |
+| Response cache           | `src/middleware/cache`                                | The first version caches explicitly configured, bounded, in-memory GET responses. Requests carrying Authorization or Cookie bypass the shared cache. Private, no-store, no-cache, Set-Cookie, Expires, undeclared Vary, and streaming responses are not stored. Declared variants are keyed and emitted in Vary. Manual invalidation fences older in-flight insertions by generation.     |
+| Cache backend            | Web standard `Cache` API and `executionCtx.waitUntil` | Uses Effect's cache and Clock abstractions instead of depending on a global edge cache or detached writes. It does not silently become a no-op when `globalThis.caches` is absent. It is a route response cache, not a complete RFC proxy cache.                                                                                                                                          |
+| QUERY caching            | Hono supports QUERY body digests                      | QUERY responses are not cached in this version. No request body is consumed to manufacture a cache key. Hono parity for new HTTP methods is not implied.                                                                                                                                                                                                                                  |
+| Entity tags              | `src/middleware/etag`                                 | Effect's entity-tag types and existing file validators remain in use. Automatic SHA-256 generation covers bounded GET response bytes and requires the caller's Digest service. HEAD uses known validators rather than hashing its empty body. Streams are never drained.                                                                                                                  |
+| Conditional requests     | Hono's response ETag middleware                       | Reusable decisions are not limited to Hono Context. Final-response validation uses Effect's pre-response phase; the documented composition order runs deferred compression before validation. Conditional responses preserve cookies and selected-representation metadata. Write validators must be checked before side effects, and failed write preconditions yield `412`, never `304`. |
+| CSRF                     | `src/middleware/csrf`                                 | Protects unsafe methods rather than only browser-simple content types. Missing or invalid proof fails closed. A contradictory Fetch Metadata header cannot override an untrusted Origin. This may reject scripts and clients that omit browser headers, so apply it to browser-authenticated routes.                                                                                      |
+| Security headers         | `src/middleware/secure-headers`                       | Supplies a small policy bundle and reusable header serialization. Hono's nonce Context, JSX integration, reporting helpers, and every historical header option are not reproduced. Applications own dynamic nonce generation and inject any required Crypto service at their composition root.                                                                                            |
+| Existing Effect features | Various Hono modules                                  | Compression, CORS, JOSE, ordinary cookies, streams, SSE, WebSocket, logging, tracing, schema validation, typed clients, and static serving are not wrapped solely to match Hono names.                                                                                                                                                                                                    |
+| Hono-specific features   | Router, factory, JSX, CSS, HTML, SSG, adapters        | No Hono Context, renderer, runtime detection, or router-history compatibility layer is included.                                                                                                                                                                                                                                                                                          |
+
+## Standards boundary
+
+HTTP cache handling follows the conservative subset described by [RFC 9111](https://www.rfc-editor.org/rfc/rfc9111.html).
+A response cache is not just a memoized handler: request identity, variants, authentication, freshness, and body ownership affect reuse.
+The package does not claim full intermediary caching, stale serving, background revalidation, range combination, or cacheable QUERY support.
+
+Language matching distinguishes HTTP media ranges from language ranges defined by [RFC 4647](https://www.rfc-editor.org/rfc/rfc4647.html).
+HTTP media types, encodings, and language tags do not share one unrestricted wildcard algorithm.
+Applications decide whether no match becomes a `406` response, another representation, or an application error.
+
+## Update contract
+
+When reviewing a Hono update, compare against the exact behavioral baseline above.
+Update that hash together with any adopted changes.
+Review every row in `hono-compatibility.md` when upstream adds or removes an entry point.
+Keep safe semantic differences explicit, and remove differences that no longer serve the package's scope.
+Do not merge Hono's source tree or replace the template toolchain to perform a behavioral update.
+Keep this document as maintained divergence information, not as a progress log.
