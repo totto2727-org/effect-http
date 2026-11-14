@@ -1,7 +1,7 @@
 # @totto2727/effect-http
 
 Standalone HTTP negotiation, caching, and security policies for Effect 4.
-The package fills specific gaps rather than reproducing Hono or wrapping HTTP features that Effect already provides.
+The package fills specific gaps rather than reproducing Hono or wrapping HTTP features that Effect or effront already provides.
 
 ## Setup
 
@@ -12,7 +12,8 @@ When registry publication is enabled, install with:
 vp add @totto2727/effect-http effect@^4.1.4
 ```
 
-The repository is currently private and npm publishing is disabled.
+Registry publication is disabled until the owner configures npm trusted publishing.
+GitHub repository visibility is managed separately in infra and does not enable npm publication.
 Effect is the only runtime peer dependency.
 Hono is neither installed nor bundled.
 
@@ -175,9 +176,12 @@ Nonce generation, rendering integration, and reporting are not included.
 
 ## Scope and upstream
 
-The [Hono feature table](./docs/hono-compatibility.md) covers all 27 built-in middleware and 14 helpers at the recorded Hono commit.
-It documents implementation, existing Effect alternatives, and exclusions for every entry.
-The [upstream record](./docs/upstream-differences.md) pins Hono, Effect, and template revisions and explains retained security and operational differences.
+The committed [Hono import-path table](./docs/hono-compatibility.md) covers all 104 concrete public import paths at the recorded Hono commit, including the 27 built-in middleware and 14 helpers.
+The inventory expands 76 fixed export paths and all 28 existing modules behind `./utils/*`, including nested JWT modules and type-only entries.
+Every path names a concrete Effect or effront counterpart, or states why this package does not implement it.
+Application composition, React rendering, UI styling, native hosting, static assets, and Server Function runtime policies already covered by effront are outside this package's scope.
+Generic negotiation and public-route response policies do not replace effront's HTML/Flight protocol, private response policy, or file-serving validators.
+The [upstream record](./docs/upstream-differences.md) pins Hono, Effect, effront, and template revisions and explains retained security and operational differences.
 Hono is a behavioral upstream, not a runtime dependency or a source-tree fork.
 Effect 3 and `@effect/platform` compatibility are not provided.
 

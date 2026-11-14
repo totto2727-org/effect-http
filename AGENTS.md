@@ -4,31 +4,36 @@
 
 This library supplies missing HTTP negotiation, cache, and security policies for Effect 4.
 Do not recreate Hono context, routers, JSX, adapters, or behavior already substantially covered by Effect.
+Do not implement application, rendering, UI, host, asset, or Server Function capabilities covered by effront.
 Keep reusable parsers and decisions available independently of HTTP middleware.
 Prefer stricter, documented security semantics to byte-for-byte Hono compatibility.
 
 ## Repository structure
 
-| Path                           | Purpose                                                       |
-| ------------------------------ | ------------------------------------------------------------- |
-| `src/index.ts`                 | Public namespace exports                                      |
-| `src/Accepts.ts`               | Standalone content negotiation and request adapters           |
-| `src/CacheControl.ts`          | Cache policy parsing and formatting                           |
-| `src/ConditionalRequest.ts`    | Reusable validators and conditional responses                 |
-| `src/ResponseCache.ts`         | Bounded, explicitly configured response caching               |
-| `src/Csrf.ts`                  | Request-origin and Fetch Metadata policy                      |
-| `src/SecureHeaders.ts`         | Response security policy                                      |
-| `src/*.test.ts`                | Public-entry-point behavior and real Web handler tests        |
-| `docs/hono-compatibility.md`   | Complete Hono feature disposition and implementation strategy |
-| `docs/upstream-differences.md` | Exact upstream revisions and retained semantic differences    |
-| `NOTICE`                       | Hono license attribution                                      |
-| `tmp/`                         | Ignored temporary sources, receipts, and package consumers    |
+| Path                           | Purpose                                                    |
+| ------------------------------ | ---------------------------------------------------------- |
+| `src/index.ts`                 | Public namespace exports                                   |
+| `src/Accepts.ts`               | Standalone content negotiation and request adapters        |
+| `src/CacheControl.ts`          | Cache policy parsing and formatting                        |
+| `src/ConditionalRequest.ts`    | Reusable validators and conditional responses              |
+| `src/ResponseCache.ts`         | Bounded, explicitly configured response caching            |
+| `src/Csrf.ts`                  | Request-origin and Fetch Metadata policy                   |
+| `src/SecureHeaders.ts`         | Response security policy                                   |
+| `src/*.test.ts`                | Public-entry-point behavior and real Web handler tests     |
+| `docs/hono-compatibility.md`   | Complete Hono public import-path disposition and strategy  |
+| `docs/upstream-differences.md` | Exact upstream revisions and retained semantic differences |
+| `NOTICE`                       | Hono license attribution                                   |
+| `tmp/`                         | Ignored temporary sources, receipts, and package consumers |
 
 ## Upstream policy
 
 - Keep `origin` pointed at `totto2727-org/effect-http` and `upstream` at `honojs/hono`.
 - The Vite library template is the scaffold, not the behavioral upstream.
-- Record the exact Hono comparison commit and Effect comparison commit in `docs/upstream-differences.md`.
+- Record exact Hono, Effect, and effront comparison commits in `docs/upstream-differences.md`.
+- Enumerate every fixed Hono export and expand wildcard exports using the pinned build rules, including nested and type-only modules.
+- Compare the concrete import-path set with the compatibility table. Missing, extra, and duplicate paths must all be zero.
+- Name a concrete Effect or effront counterpart or state a specific exclusion reason in every row.
+- Keep effront's implemented scope distinct from planned features. Do not duplicate its HTML/Flight selection, private response policy, static-file handling, or Server Function origin enforcement.
 - Update both maintained comparison documents whenever adopting Hono changes or changing a feature disposition.
 - Preserve applicable MIT notices when adapting source.
 - Never report all of Effect as lacking a feature merely because it does not have a matching middleware name.
