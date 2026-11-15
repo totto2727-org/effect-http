@@ -45,6 +45,16 @@ Hono is not installed or bundled.
 | Effront-owned features   | Application, JSX, HTML, CSS, host adapters, static assets | Existing React RSC/SSR, hydration/navigation, application composition, native hosting, asset serving, and Server Function runtime policies remain in effront. Generic Accept negotiation does not replace HTML/Flight selection. Public route caching does not cache private effront responses. Dynamic byte validators do not replace static-file validators. No effront dependency or integration layer is added. |
 | Hono-specific features   | Router, factory, JSX, CSS, HTML, SSG, adapters            | No Hono Context, renderer, runtime detection, or router-history compatibility layer is included.                                                                                                                                                                                                                                                                                                                    |
 
+## Publication configuration
+
+Unlike the disabled scaffold workflow, `.github/workflows/publish.yml` is enabled and `package.json` no longer marks the package private, as explicitly requested for publication CI.
+The inherited trigger remains pushes of `v*` tags only, with job-scoped OIDC and the shared `@main` actions unchanged.
+Setup, artifact building, and the publisher use the existing hook-free Nix `ci` shell to avoid executing `vp config` before Vite+ installation.
+This is release automation customization, not a Hono runtime or API change.
+The owner must confirm npm trusted publishing for `totto2727-org/effect-http` and `publish.yml` before creating a protected release tag.
+See [README.md](../README.md) for registry linking and first-publication prerequisites.
+No Hono comparison revision or import-path disposition changes are required for this configuration.
+
 ## Standards boundary
 
 HTTP cache handling follows the conservative subset described by [RFC 9111](https://www.rfc-editor.org/rfc/rfc9111.html).

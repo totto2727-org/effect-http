@@ -1,7 +1,6 @@
 {
   "name": "@totto2727/effect-http",
   "version": "0.1.0",
-  "private": true,
   "description": "Small HTTP negotiation, caching, and security utilities for Effect",
   "license": "MIT",
   "repository": {

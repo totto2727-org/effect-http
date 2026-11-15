@@ -74,7 +74,10 @@ Prefer stricter, documented security semantics to byte-for-byte Hono compatibili
 - Keep all shared `totto2727-org/monorepo` action references on `@main`.
 - Keep inherited CI and publication workflows unchanged unless a demonstrated project requirement needs a change.
 - Do not replace publication on pushes to `main` with tag or release triggers, and preserve existing tag triggers.
-- Keep `private: true` and `publish.yml.disabled` until the owner configures npm trusted publishing for the exact repository and workflow.
+- Publication CI is explicitly enabled in `publish.yml`, and the manifest is publishable. Before creating any release tag, require the owner's confirmation of npm trusted publishing for `totto2727-org/effect-http` and workflow filename `publish.yml`, with direct publishing permitted and no environment unless a matching protected job environment is configured.
+- The actual inherited trigger is a push of a `v*` tag only. Use a protected `v<version>` tag matching the manifest from a validated commit. Never create a release tag merely to test CI.
+- Keep the hook-free `ci` Nix shell for setup, building, and the shared publish action so Nix setup does not run `vp config` before Vite+ is installed.
+- Enabling CI is not registry authorization or a release. If registry linking needs an initial publication, the owner must bootstrap it manually.
 - Never add long-lived npm tokens or publish as part of a coding task without authorization.
 
 _This AGENTS.md was generated from the [share-artifact skill](https://raw.githubusercontent.com/totto2727-org/agent/refs/heads/main/plugins/totto2727-coding/skills/share-artifact/SKILL.md) and [AGENTS template](https://raw.githubusercontent.com/totto2727-org/agent/refs/heads/main/plugins/totto2727-coding/skills/share-artifact/agents/template.md)._
