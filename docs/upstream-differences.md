@@ -52,7 +52,9 @@ The inherited trigger remains pushes of `v*` tags only, with job-scoped OIDC and
 Setup, artifact building, and the publisher use the existing hook-free Nix `ci` shell to avoid executing `vp config` before Vite+ installation.
 This is release automation customization, not a Hono runtime or API change.
 The owner must confirm npm trusted publishing for `totto2727-org/effect-http` and `publish.yml` before creating a protected release tag.
-See [README.md](../README.md) for registry linking and first-publication prerequisites.
+The shared action stages packages with `vp pm stage publish -r --provenance`; staging does not make a version live.
+Prefer staging-only publisher permissions when available and keep review plus 2FA approval on the owner's trusted device.
+See [README.md](../README.md) for registry linking, first-publication prerequisites, and the stage/review/approve workflow.
 No Hono comparison revision or import-path disposition changes are required for this configuration.
 
 ## Standards boundary

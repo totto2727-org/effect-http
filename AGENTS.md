@@ -74,7 +74,7 @@ Prefer stricter, documented security semantics to byte-for-byte Hono compatibili
 - Keep all shared `totto2727-org/monorepo` action references on `@main`.
 - Keep inherited CI and publication workflows unchanged unless a demonstrated project requirement needs a change.
 - Do not replace publication on pushes to `main` with tag or release triggers, and preserve existing tag triggers.
-- Publication CI is explicitly enabled in `publish.yml`, and the manifest is publishable. Before creating any release tag, require the owner's confirmation of npm trusted publishing for `totto2727-org/effect-http` and workflow filename `publish.yml`, with direct publishing permitted and no environment unless a matching protected job environment is configured.
+- Publication CI is explicitly enabled in `publish.yml`, and the manifest is publishable. Before creating any release tag, require the owner's confirmation of npm trusted publishing for `totto2727-org/effect-http` and workflow filename `publish.yml`, with staging-only permissions when available and no environment unless a matching protected job environment is configured. The shared publisher stages versions; the owner reviews and approves them with 2FA before live publication. Never stage or approve merely to test CI.
 - The actual inherited trigger is a push of a `v*` tag only. Use a protected `v<version>` tag matching the manifest from a validated commit. Never create a release tag merely to test CI.
 - Keep the hook-free `ci` Nix shell for setup, building, and the shared publish action so Nix setup does not run `vp config` before Vite+ is installed.
 - Enabling CI is not registry authorization or a release. If registry linking needs an initial publication, the owner must bootstrap it manually.
