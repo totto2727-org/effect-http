@@ -14,11 +14,30 @@
     "docs/hono-compatibility.md"
   ],
   "type": "module",
-  "types": "./dist/index.d.ts",
   "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
+    "./accepts": {
+      "types": "./dist/accepts.d.ts",
+      "import": "./dist/accepts.js"
+    },
+    "./cacheControl": {
+      "types": "./dist/cacheControl.d.ts",
+      "import": "./dist/cacheControl.js"
+    },
+    "./conditionalRequest": {
+      "types": "./dist/conditionalRequest.d.ts",
+      "import": "./dist/conditionalRequest.js"
+    },
+    "./csrf": {
+      "types": "./dist/csrf.d.ts",
+      "import": "./dist/csrf.js"
+    },
+    "./responseCache": {
+      "types": "./dist/responseCache.d.ts",
+      "import": "./dist/responseCache.js"
+    },
+    "./secureHeaders": {
+      "types": "./dist/secureHeaders.d.ts",
+      "import": "./dist/secureHeaders.js"
     }
   },
   "publishConfig": {

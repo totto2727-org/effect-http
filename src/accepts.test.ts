@@ -1,10 +1,10 @@
-import { Array as Arr, Effect, Option, Result } from 'effect'
+import { Array as Arr, Effect, Option, Result, String as Str } from 'effect'
 import * as HttpEffect from 'effect/http/HttpEffect'
 import * as HttpServerRequest from 'effect/http/HttpServerRequest'
 import * as HttpServerResponse from 'effect/http/HttpServerResponse'
-import { describe, expect, it } from 'vite-plus/test'
+import { describe, expect, expectTypeOf, it } from 'vite-plus/test'
 
-import { Accepts } from './index.ts'
+import * as Accepts from './accepts.ts'
 
 const choose = (kind: Accepts.Kind, header: string | null | undefined, supports: ReadonlyArray<string>) => {
   const result = Accepts.negotiate(kind, header, supports)
@@ -19,6 +19,37 @@ describe('Accepts media negotiation', () => {
     ).toBe('application/json')
     expect(choose('mediaType', '*/*;q=1,text/*;q=0.2,text/html;q=0', ['text/html'])).toBeNull()
     expect(choose('mediaType', '*/*;q=1,text/*;q=0', ['text/plain'])).toBeNull()
+  })
+
+  it('accepts exactly the maximum header, offer, list and parameter sizes', () => {
+    const longestCoding = Str.repeat(8192)('x')
+    expect(choose('encoding', longestCoding, [longestCoding])).toBe(longestCoding)
+    expect(choose('encoding', Arr.join(Arr.replicate('gzip', 128), ','), Arr.replicate('gzip', 128))).toBe('gzip')
+
+    const media = `text/html${Arr.join(
+      Arr.makeBy(128, (index) => `;p${index}=x`),
+      '',
+    )}`
+    expect(choose('mediaType', media, [media])).toBe(media)
+  })
+
+  it.each(['gzip\n', 'gzip\r', 'gzip\0', 'gzipé'])(
+    'rejects non-ASCII or forbidden control input %j at the boundary',
+    (wire) => {
+      const header = Accepts.parse('encoding', wire)
+      const offer = Accepts.negotiate('encoding', null, [wire])
+      expect(Result.isFailure(header) && header.failure.reason).toBe('Invalid or oversized header')
+      expect(Result.isFailure(offer) && offer.failure.reason).toBe('Invalid or oversized offer')
+    },
+  )
+
+  it('requires validated values, parameters and qualities in parsed preferences', () => {
+    expectTypeOf<string>().not.toExtend<Accepts.Preference['value']>()
+    expectTypeOf<string>().not.toExtend<Accepts.Preference['parameters'][string]>()
+    expectTypeOf<number>().not.toExtend<Accepts.Preference['quality']>()
+    expectTypeOf<Accepts.Preference['value']>().toExtend<string>()
+    expectTypeOf<Accepts.Preference['parameters'][string]>().toExtend<string>()
+    expectTypeOf<Accepts.Preference['quality']>().toExtend<number>()
   })
 
   it('preserves offered casing and server order for equal qualities', () => {

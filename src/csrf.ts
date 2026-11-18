@@ -1,8 +1,21 @@
-import { Array, Data, Effect, HashSet, Option, Predicate, pipe, Record, Schema, String } from 'effect'
+import {
+  Array,
+  Data,
+  Effect,
+  HashSet,
+  Option,
+  Predicate,
+  pipe,
+  Record,
+  Result,
+  Schema,
+  SchemaGetter,
+  String,
+} from 'effect'
 import { HttpMiddleware, HttpServerRequest, HttpServerResponse } from 'effect/http'
 
 export interface Config {
-  /** Additional exact HTTP(S) origins. Paths, credentials, query strings, and fragments are rejected. */
+  /** Additional exact HTTP(S) origins. Paths, credentials, query strings, and fragments are rejected after URL normalization. */
   readonly allowedOrigins?: readonly string[]
 }
 
@@ -27,54 +40,46 @@ export type Decision =
     }
 
 export class ConfigError extends Data.TaggedError('ConfigError')<{
-  readonly message?: string
-  readonly cause?: unknown
-}> {
-  constructor(message?: string, options?: ErrorOptions) {
-    super(Predicate.isNullish(message) ? (options ?? {}) : { ...options, message })
-  }
-}
+  readonly message: string
+  readonly cause: Schema.SchemaError
+}> {}
 
-// eslint-disable-next-line no-control-regex -- Reject ASCII controls before URL normalization can strip them.
-const forbiddenUrlCharacters = String.match(/[\u0000-\u0020\u007f\\]/u)
+const HttpUrl = Schema.URLFromString.check(
+  Schema.makeFilter((url) => (url.protocol === 'http:' || url.protocol === 'https:') && !url.username && !url.password),
+).pipe(Schema.brand('CsrfHttpUrl'))
+const Origin = HttpUrl.check(Schema.makeFilter((url) => url.pathname === '/' && !url.search && !url.hash)).pipe(
+  Schema.decodeTo(Schema.String, {
+    decode: SchemaGetter.transform((url) => url.origin),
+    encode: SchemaGetter.forbiddenEncoding,
+  }),
+  Schema.brand('CsrfOrigin'),
+)
+type Origin = typeof Origin.Type
 const decodeUrl = Schema.decodeUnknownOption(Schema.URLFromString)
-// Origin headers forbid URL components that the standard parser would normalize away.
-const originSyntax = String.match(/^https?:\/\/[^/@]+\/?$/iu)
+const parseUrl = Schema.decodeUnknownOption(HttpUrl)
+const decodeOrigin = Schema.decodeUnknownResult(Origin)
+const parseOrigin = (value: string): Option.Option<Origin> => Result.getSuccess(decodeOrigin(value))
 
-const parseUrl = (value: string): Option.Option<URL> =>
-  Option.isSome(forbiddenUrlCharacters(value))
-    ? Option.none()
-    : pipe(
-        decodeUrl(value),
-        Option.filter(
-          (url) => (url.protocol === 'http:' || url.protocol === 'https:') && !url.username && !url.password,
-        ),
-      )
-
-const parseOrigin = (value: string): Option.Option<string> =>
-  pipe(
-    parseUrl(value),
-    Option.filter((url) => url.pathname === '/' && !url.search && !url.hash && Option.isSome(originSyntax(value))),
-    Option.map((url) => url.origin),
-  )
-
-const origins = (config: Config): HashSet.HashSet<string> =>
+const origins = (config: Config): HashSet.HashSet<Origin> =>
   pipe(
     config.allowedOrigins ?? [],
     Array.map((value) =>
-      Option.getOrThrowWith(parseOrigin(value), () => new ConfigError(`Invalid allowed origin: ${value}`)),
+      Result.getOrThrowWith(
+        decodeOrigin(value),
+        (cause) => new ConfigError({ message: `Invalid allowed origin: ${value}`, cause }),
+      ),
     ),
     HashSet.fromIterable,
   )
 
-const evaluate = (request: Request, allowedOrigins: HashSet.HashSet<string>): Decision => {
+const evaluate = (request: Request, allowedOrigins: HashSet.HashSet<Origin>): Decision => {
   if (Array.contains(['GET', 'HEAD', 'OPTIONS'], String.toUpperCase(request.method))) return { allowed: true }
   const target = parseUrl(request.url)
   if (Option.isNone(target)) return { allowed: false, reason: 'invalid-target' }
-  const origin = Predicate.isNullish(request.origin) ? Option.none<string>() : parseOrigin(request.origin)
+  const origin = Predicate.isNullish(request.origin) ? Option.none<Origin>() : parseOrigin(request.origin)
   if (Predicate.isNotNullish(request.origin) && Option.isNone(origin))
     return { allowed: false, reason: 'invalid-origin' }
-  const sameOrigin = Option.contains(origin, target.value.origin)
+  const sameOrigin = Option.exists(origin, (value) => value === target.value.origin)
   if (Option.isSome(origin) && !sameOrigin && !HashSet.has(allowedOrigins, origin.value)) {
     return { allowed: false, reason: 'untrusted-origin' }
   }

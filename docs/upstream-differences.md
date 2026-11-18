@@ -35,7 +35,12 @@ Missing-value checks use Effect's nullish APIs instead of distinguishing `null` 
 Media parameters use Effect `Record` construction and own-key lookup, including names such as `__proto__` and `constructor`, without a custom prototype conversion.
 CSRF URL decoding delegates to `Schema.URLFromString`; relative request targets use `HttpServerRequest.toURL` instead of manually assembling a URL.
 Absolute request targets retain their authority, and missing Host values cannot silently become localhost proof.
-Origin-only syntax, HTTP(S), credential, and control-character restrictions remain CSRF policy checks, not a replacement URL parser.
+HTTP(S), credential, path, query, and fragment restrictions apply to URL values decoded and normalized by Effect, not to a separately parsed raw URL grammar.
+Equivalent inputs normalized by `Schema.URLFromString`, such as dot segments or empty user information, use the resulting origin for policy decisions.
+Empty query and fragment markers are accepted when the decoded URL's `search` and `hash` properties are empty; nonempty query and fragment values are rejected.
+Named Schemas own format and size constraints; decoded Schema-derived brands carry validated values into policy logic.
+Negotiation ordering, directive conflicts, conditional request precedence, and cache eligibility remain decision logic rather than value constraints.
+The six camelCase module subpaths are the public entry points; there is no root barrel export.
 These implementation choices preserve the documented HTTP policies rather than reproduce Hono's internal control flow.
 Hono is not installed or bundled.
 

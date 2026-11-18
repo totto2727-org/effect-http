@@ -14,6 +14,7 @@ import {
   Ref,
   Result,
   Schema,
+  SchemaTransformation,
   String,
   pipe,
 } from 'effect'
@@ -21,8 +22,8 @@ import * as Cookies from 'effect/http/Cookies'
 import * as HttpServerRequest from 'effect/http/HttpServerRequest'
 import * as HttpServerResponse from 'effect/http/HttpServerResponse'
 
-import * as CacheControl from './CacheControl.ts'
-import * as HttpDate from './internal/HttpDate.ts'
+import * as CacheControl from './cacheControl.ts'
+import * as HttpDate from './internal/httpDate.ts'
 
 export interface Options {
   readonly capacity: number
@@ -43,13 +44,39 @@ export class ConfigError extends Data.TaggedError('ResponseCacheConfigError')<{
   readonly message: string
 }> {}
 
-const isNatural = Schema.is(Schema.Natural)
-const isPositiveInteger = Schema.is(Schema.Int.check(Schema.isGreaterThan(0)))
-const isPositiveLifetime = Schema.is(Schema.Finite.check(Schema.isGreaterThan(0)))
-const isAgeSeconds = Schema.is(Schema.Natural.check(Schema.isLessThanOrEqualTo(9_007_199_254_740_991 / 1000)))
+const Capacity = Schema.Int.check(Schema.isGreaterThan(0)).pipe(Schema.brand('ResponseCacheCapacity'))
+const Lifetime = Schema.Finite.check(Schema.isGreaterThan(0)).pipe(Schema.brand('ResponseCacheLifetime'))
+const BodyLimit = Schema.Natural.pipe(Schema.brand('ResponseCacheBodyLimit'))
+const Configuration = Schema.Struct({
+  capacity: Capacity,
+  ttlMilliseconds: Lifetime,
+  maxBodyBytes: BodyLimit,
+  publicRoute: Schema.Literal(true),
+})
+const AgeSeconds = Schema.Natural.check(Schema.isLessThanOrEqualTo(9_007_199_254_740_991 / 1000)).pipe(
+  Schema.brand('ResponseCacheAgeSeconds'),
+)
+const AgeFromString = Schema.String.check(Schema.isMaxLength(16), Schema.isPattern(/^\d+$(?![\s\S])/u)).pipe(
+  Schema.decodeTo(Schema.NumberFromString),
+  Schema.decodeTo(AgeSeconds),
+)
+const HeaderValue = Schema.String.check(Schema.isMaxLength(8192), Schema.isPattern(/^[\t\x20-\x7e]*$(?![\s\S])/u)).pipe(
+  Schema.brand('ResponseCacheHeaderValue'),
+)
+const HeaderName = Schema.String.pipe(Schema.decode(SchemaTransformation.toLowerCase()))
+  .check(Schema.isPattern(/^[!#$%&'*+.^_`|~\w-]+$(?![\s\S])/u))
+  .pipe(Schema.brand('ResponseCacheHeaderName'))
+const VaryNames = Schema.Array(HeaderName)
+const DeclaredVary = VaryNames.check(Schema.isMaxLength(64))
+type BodyLimit = typeof BodyLimit.Type
+type Lifetime = typeof Lifetime.Type
+type HeaderName = typeof HeaderName.Type
+const decodeConfiguration = Schema.decodeUnknownOption(Configuration)
+const decodeVaryNames = Schema.decodeUnknownOption(VaryNames)
+const decodeHeaderValue = Schema.decodeUnknownOption(HeaderValue)
+const decodeDeclaredVary = Schema.decodeUnknownOption(DeclaredVary)
+const decodeAge = Schema.decodeUnknownOption(AgeFromString)
 const encodeKey = Schema.encodeSync(Schema.fromJsonString(Schema.Array(Schema.Json)))
-const invalidHeaderBytes = String.match(/[^\t\x20-\x7e]/)
-const varyToken = String.match(/^[!#$%&'*+.^_`|~\w-]+$/)
 
 const copy = (response: HttpServerResponse.HttpServerResponse): HttpServerResponse.HttpServerResponse =>
   response.body._tag === 'Uint8Array'
@@ -84,8 +111,8 @@ const blockedRequest = (request: HttpServerRequest.HttpServerRequest): boolean =
 
 const storableResponse = (
   response: HttpServerResponse.HttpServerResponse,
-  maxBodyBytes: number,
-  vary: ReadonlyArray<string>,
+  maxBodyBytes: BodyLimit,
+  vary: ReadonlyArray<HeaderName>,
 ): boolean => {
   const { body, headers } = response
   if (
@@ -103,19 +130,16 @@ const storableResponse = (
     return false
   const varyHeader = headers['vary']
   if (Predicate.isNullish(varyHeader)) return true
-  if (String.length(varyHeader) > 8192 || Option.isSome(invalidHeaderBytes(varyHeader))) return false
-  const declared = pipe(
-    varyHeader,
-    String.split(','),
-    Array.map((value) => String.toLowerCase(String.trim(value))),
-  )
-  return declared.length <= 64 && Array.every(declared, (name) => name !== '*' && Array.contains(vary, name))
+  const validated = decodeHeaderValue(varyHeader)
+  if (Option.isNone(validated)) return false
+  const declared = pipe(validated.value, String.split(','), Array.map(String.trim), decodeDeclaredVary)
+  return Option.exists(declared, (names) => Array.every(names, (name) => name !== '*' && Array.contains(vary, name)))
 }
 
 /** Derive freshness only after every origin policy, Age and Date value has been validated. */
 const freshness = (
   headers: HttpServerResponse.HttpServerResponse['headers'],
-  ttlMilliseconds: number,
+  ttlMilliseconds: Lifetime,
   requestedAt: number,
   storedAt: number,
 ) =>
@@ -125,11 +149,7 @@ const freshness = (
     if (directives.private || directives.noStore || directives.noCache) return yield* Option.none()
     const seconds = directives.sMaxAge ?? directives.maxAge
     const lifetime = Predicate.isNullish(seconds) ? ttlMilliseconds : Number.min(ttlMilliseconds, seconds * 1000)
-    const age = headers['age']
-    if (Predicate.isNotNullish(age) && (String.length(age) > 16 || Option.isNone(String.match(/^\d+$/)(age)))) {
-      return yield* Option.none()
-    }
-    const ageSeconds = Predicate.isNullish(age) ? 0 : yield* Number.parse(age).pipe(Option.filter(isAgeSeconds))
+    const ageSeconds = yield* decodeAge(headers['age'] ?? '0')
     const originDate = headers['date']
     const apparentAge = Predicate.isNullish(originDate)
       ? 0
@@ -143,28 +163,25 @@ const freshness = (
 /** Explicit public GET route cache, not a proxy cache. Call invalidateAll after writes, including writes outside this route. */
 export const make = (options: Options) =>
   Effect.gen(function* () {
-    if (
-      options.publicRoute !== true ||
-      !isPositiveInteger(options.capacity) ||
-      !isNatural(options.maxBodyBytes) ||
-      !isPositiveLifetime(options.ttlMilliseconds)
+    const config = Option.getOrThrowWith(
+      decodeConfiguration(options),
+      () => new ConfigError({ message: 'Invalid route cache configuration' }),
     )
-      throw new ConfigError({ message: 'Invalid route cache configuration' })
     const vary = pipe(
-      options.vary,
-      Array.map(String.toLowerCase),
+      Option.getOrThrowWith(
+        decodeVaryNames(options.vary),
+        () => new ConfigError({ message: 'Invalid Vary declaration' }),
+      ),
       HashSet.fromIterable,
       Array.fromIterable,
       Array.sort(String.Order),
     )
-    if (
-      Array.some(vary, (name) => Option.isNone(varyToken(name)) || Array.contains(['authorization', 'cookie'], name))
-    ) {
+    if (Array.some(vary, (name) => Array.contains(['authorization', 'cookie'], name))) {
       throw new ConfigError({ message: 'Invalid Vary declaration' })
     }
     const storage = yield* Cache.make<string, Entry>({
-      capacity: options.capacity,
-      timeToLive: options.ttlMilliseconds,
+      capacity: config.capacity,
+      timeToLive: config.ttlMilliseconds,
       lookup: () => Effect.die(new ConfigError({ message: 'Route cache uses explicit insertion only' })),
     })
     const generation = yield* Ref.make(0)
@@ -200,9 +217,9 @@ export const make = (options: Options) =>
           return HttpServerResponse.setHeader(copy(cached.value.response), 'age', `${ageSeconds}`)
         }
         const response = yield* handler
-        if (!storableResponse(response, options.maxBodyBytes, vary)) return response
+        if (!storableResponse(response, config.maxBodyBytes, vary)) return response
         const storedAt = yield* Clock.currentTimeMillis
-        const fresh = freshness(response.headers, options.ttlMilliseconds, now, storedAt)
+        const fresh = freshness(response.headers, config.ttlMilliseconds, now, storedAt)
         if (Option.isNone(fresh) || (yield* Ref.get(generation)) !== currentGeneration) return response
         const output =
           vary.length === 0 ? response : HttpServerResponse.setHeader(response, 'vary', Array.join(vary, ', '))

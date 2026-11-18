@@ -49,6 +49,10 @@ The tables distinguish request instance fields from namespace functions.
 This package does not implement features that effront covers, whether or not Effect has an equivalent.
 [upstream-differences.md](./upstream-differences.md) records the reference commits and update policy.
 
+The added policies are imported from `@totto2727/effect-http/accepts`, `@totto2727/effect-http/cacheControl`, `@totto2727/effect-http/conditionalRequest`, `@totto2727/effect-http/responseCache`, `@totto2727/effect-http/csrf`, and `@totto2727/effect-http/secureHeaders`.
+There is no root barrel export.
+Use namespace imports when following the module-qualified names in the tables.
+
 ## Core, types, requests, clients, and validation: 9 paths
 
 | Hono import path      | Disposition  | Concrete counterpart                                                                                                                                            | Policy or reason for not adding                                                                                                                                                       |

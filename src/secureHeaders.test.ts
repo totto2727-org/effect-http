@@ -2,10 +2,16 @@ import { Context, Effect } from 'effect'
 import { HttpEffect, HttpServerResponse } from 'effect/http'
 import { describe, expect, it } from 'vite-plus/test'
 
-import { SecureHeaders } from './index.ts'
+import * as SecureHeaders from './secureHeaders.ts'
 
 describe('SecureHeaders pure policies', () => {
+  it.each(["'self'\n", "'self'\r", "'self'\r\n"])('rejects terminal CSP controls: %j', (value) => {
+    expect(() => SecureHeaders.serializeContentSecurityPolicy({ 'default-src': [value] })).toThrow(
+      SecureHeaders.ConfigError,
+    )
+  })
   it('has compact document-isolation defaults without HTTPS or CSP assumptions', () => {
+    expect(Object.isFrozen(SecureHeaders.headers())).toBe(true)
     expect(SecureHeaders.headers()).toEqual({
       'x-content-type-options': 'nosniff',
       'x-frame-options': 'DENY',
@@ -48,14 +54,19 @@ describe('SecureHeaders pure policies', () => {
     ).toBe('max-age=31536000; includeSubDomains; preload')
     expect(SecureHeaders.headers({ hsts: { maxAge: 0 } })['strict-transport-security']).toBe('max-age=0')
   })
-  it.each(['https://safe.example; script-src *', 'https://safe.example\r\nX: injected', "'self' *", 'a,b', ''])(
-    'rejects CSP token injection %j',
-    (value) => {
-      expect(() => SecureHeaders.serializeContentSecurityPolicy({ 'default-src': [value] })).toThrow(
-        SecureHeaders.ConfigError,
-      )
-    },
-  )
+  it.each([
+    'https://safe.example; script-src *',
+    'https://safe.example\r\nX: injected',
+    "'self' *",
+    'a,b',
+    'a\n',
+    'é',
+    '',
+  ])('rejects CSP token injection %j', (value) => {
+    expect(() => SecureHeaders.serializeContentSecurityPolicy({ 'default-src': [value] })).toThrow(
+      SecureHeaders.ConfigError,
+    )
+  })
   it('rejects unknown directives, empty policies, invalid boolean directives, and none mixtures', () => {
     expect(() => SecureHeaders.serializeContentSecurityPolicy({})).toThrow(SecureHeaders.ConfigError)
     expect(() => SecureHeaders.serializeContentSecurityPolicy({ 'default-src': [] })).toThrow(SecureHeaders.ConfigError)
@@ -68,6 +79,15 @@ describe('SecureHeaders pure policies', () => {
     // @ts-expect-error Unknown directives must be rejected by both the type system and runtime.
     expect(() => SecureHeaders.serializeContentSecurityPolicy({ 'default-src; script-src': ['*'] })).toThrow(
       SecureHeaders.ConfigError,
+    )
+  })
+  it('reports malformed inputs before otherwise inapplicable CSP and HSTS features', () => {
+    expect(() => SecureHeaders.serializeContentSecurityPolicy({ 'upgrade-insecure-requests': [';'] })).toThrow(
+      'Invalid CSP value for upgrade-insecure-requests',
+    )
+    // @ts-expect-error JavaScript callers can supply an invalid flag even for a valid age.
+    expect(() => SecureHeaders.headers({ hsts: { maxAge: 1, includeSubDomains: 'true', preload: true } })).toThrow(
+      'Invalid HSTS configuration',
     )
   })
   it('validates policy enums even when JavaScript callers bypass TypeScript', () => {

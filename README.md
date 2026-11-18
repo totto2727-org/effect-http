@@ -1,176 +1,227 @@
 # @totto2727/effect-http
 
-HTTP content negotiation, response caching, and security middleware for Effect 4.
+HTTP content negotiation, cache policies, conditional requests, and security middleware for Effect 4.
+
+## Usage
+
+Make a Web handler that applies a Cache-Control policy:
+
+```ts
+import * as CacheControl from '@totto2727/effect-http/cacheControl'
+import { Effect } from 'effect'
+import { HttpEffect, HttpServerResponse } from 'effect/http'
+
+const handler = HttpEffect.toWebHandler(
+  Effect.succeed(HttpServerResponse.text('Hello')).pipe(CacheControl.middleware({ public: true, maxAge: 60 })),
+)
+const response = await handler(new Request('https://example.com/'))
+console.log(response.headers.get('cache-control')) // public, max-age=60
+```
+
+## Key features
+
+- Standalone parsers for `Accept` and Cache-Control headers.
+- Conditional requests and bounded caching for public GET responses.
+- Origin checks and response security headers for browser-facing routes.
+- ESM subpath exports with TypeScript declarations.
+
+## Prerequisites
+
+- **Node.js 24 or newer** and an ESM project.
+- **Vite+** to use the installation command below.
+- **Effect 4.1.4 or newer within major version 4**, the only runtime peer dependency.
 
 ## Setup
 
-Use an ESM project with Node.js 24 or newer and Effect 4.1.4 or newer within major version 4.
-Install with:
+Install the library and its peer dependency from npm:
 
 ```bash
 vp add @totto2727/effect-http effect@^4.1.4
 ```
 
-Effect is the only runtime peer dependency.
+Import the module you need from its subpath. The package has no root export.
 
-## Content negotiation without middleware
+## API
+
+### `accepts`
+
+`parse` returns a `Parsed` value with readonly, validated `Preference` entries or a `ParseError`.
+`Kind` selects media type, language, encoding, or charset negotiation.
+The negotiation helpers return the original matching offer as an `Option`. Invalid header syntax is a separate error.
+Set `Vary` when the representation depends on negotiation. Return `406` or apply an explicit fallback if no offer matches.
 
 ```ts
-import { Accepts } from '@totto2727/effect-http'
-import { Option, Result } from 'effect'
+import * as Accepts from '@totto2727/effect-http/accepts'
+import { Effect, Option, Result } from 'effect'
+import { HttpServerRequest } from 'effect/http'
 
-const result = Accepts.negotiate('mediaType', 'application/json, text/plain;q=0.5', ['text/plain', 'application/json'])
+const kind: Accepts.Kind = 'mediaType'
+const header = 'application/json, text/plain;q=0.5'
+const offers = ['text/plain', 'application/json']
+const request = new Request('https://example.com/', { headers: { accept: header } })
 
-if (Result.isSuccess(result)) {
-  console.log(Option.getOrUndefined(result.success)) // application/json
-}
+const parsed: Accepts.Parsed = Result.getOrThrow(Accepts.parse(kind, header))
+console.log(parsed)
+console.log(Option.getOrThrow(Result.getOrThrow(Accepts.negotiate(kind, header, offers)))) // application/json
+console.log(Option.getOrThrow(Result.getOrThrow(Accepts.negotiateHeaders(kind, request.headers, offers)))) // application/json
+console.log(Option.getOrThrow(Result.getOrThrow(Accepts.negotiateRequest(kind, request, offers)))) // application/json
 
-const requestResult = Accepts.negotiateRequest(
-  'language',
-  new Request('https://example.com', {
-    headers: { 'accept-language': 'en-US, en;q=0.8' },
-  }),
-  ['ja', 'en'],
+const selected = await Effect.runPromise(
+  Accepts.negotiateEffect(kind, offers).pipe(
+    Effect.provideService(HttpServerRequest.HttpServerRequest, HttpServerRequest.fromWeb(request)),
+  ),
 )
+console.log(Option.getOrThrow(selected)) // application/json
 ```
 
-| API                                                 | Input and output                                                                             |
-| --------------------------------------------------- | -------------------------------------------------------------------------------------------- |
-| `Accepts.parse(kind, header)`                       | Parses `string \| null \| undefined` into `Result<Parsed, ParseError>`.                      |
-| `Accepts.negotiate(kind, header, supports)`         | Returns `Result<Option<string>, ParseError>`, preserving the selected entry from `supports`. |
-| `Accepts.negotiateHeaders(kind, headers, supports)` | Reads Web `Headers` without an Effect runtime.                                               |
-| `Accepts.negotiateRequest(kind, request, supports)` | Reads a Web `Request` without consuming its body.                                            |
-| `Accepts.negotiateEffect(kind, supports)`           | Returns an Effect requiring `HttpServerRequest`, with a typed `ParseError`.                  |
+### `cacheControl`
 
-`kind` is `mediaType`, `language`, `encoding`, or `charset`.
-`Accepts` provides helpers, not middleware.
-Applications currently map parsing failures and unmatched offers to responses and set the appropriate `Vary` header.
-A missing header (`null` or `undefined`) accepts any supported offer.
-An empty header accepts none, except for the implicit `identity` encoding.
-Handle `None` explicitly, for example by returning `406`.
-
-Media negotiation respects range specificity, parameters, and quality-zero exclusions.
-Language negotiation uses RFC 4647 basic filtering: `en` matches an offered `en-US`, but `en-US` does not match an offered `en`.
-Equal effective qualities use server offer order, while duplicate ranges of equal specificity use the lowest quality.
-Malformed or oversized headers fail parsing.
-The exported JSDoc describes the grammar and parser limits.
-
-## Response policies
+`parse` rejects duplicates, unsupported directives, and conflicting visibility with a `ParseError`.
+`format` and `middleware` accept plain `Directives` and throw `ConfigError` for invalid configuration.
 
 ```ts
-import { CacheControl, ConditionalRequest, Csrf, SecureHeaders } from '@totto2727/effect-http'
-import { Effect } from 'effect'
+import * as CacheControl from '@totto2727/effect-http/cacheControl'
+import { Effect, Result } from 'effect'
+import { HttpServerResponse } from 'effect/http'
+
+const directives: CacheControl.Directives = { public: true, maxAge: 60 }
+const header = CacheControl.format(directives)
+console.log(Result.getOrThrow(CacheControl.parse(header))) // { public: true, maxAge: 60 }
+
+const response = await Effect.runPromise(
+  CacheControl.middleware(directives)(Effect.succeed(HttpServerResponse.text('Hello'))),
+)
+console.log(response.headers['cache-control']) // public, max-age=60
+```
+
+### `conditionalRequest`
+
+Use `parseEtag` to validate a quoted ETag and `matches` to compare validators.
+Call `evaluate` with lowercase request header names before a write. Only `Proceed` permits the write.
+`apply` uses known `Validators` on a selected response. `middleware` can generate ETags for bounded in-memory GET bodies using the caller's `Digest` service. It does not buffer streams.
+Invalid validator or middleware configuration can raise `ConfigError`.
+
+```ts
+import * as ConditionalRequest from '@totto2727/effect-http/conditionalRequest'
+import { Effect, Option } from 'effect'
 import { Digest } from 'effect/crypto'
-import { HttpServerResponse } from 'effect/http'
+import { HttpEffect, HttpServerRequest, HttpServerResponse } from 'effect/http'
 
-const app = Effect.succeed(HttpServerResponse.text('Hello')).pipe(
-  CacheControl.middleware({ public: true, maxAge: 60 }),
-  ConditionalRequest.middleware({ maxBodyBytes: 64 * 1024 }),
-  Csrf.middleware(),
-  SecureHeaders.middleware(),
+const etag = Option.getOrThrow(Option.fromNullishOr(ConditionalRequest.parseEtag('"revision-8"')))
+const previous = Option.getOrThrow(Option.fromNullishOr(ConditionalRequest.parseEtag('"revision-7"')))
+console.log(ConditionalRequest.matches(etag, previous, true)) // false
+
+const validators: ConditionalRequest.Validators = { etag }
+const evaluation: ConditionalRequest.Evaluation = {
+  ...validators,
+  method: 'PUT',
+  headers: { 'if-match': '"revision-7"' },
+}
+const decision: ConditionalRequest.Decision = ConditionalRequest.evaluate(evaluation)
+console.log(decision) // PreconditionFailed
+
+const request = HttpServerRequest.fromWeb(
+  new Request('https://example.com/', { headers: { 'if-none-match': '"revision-8"' } }),
 )
+console.log(ConditionalRequest.apply(HttpServerResponse.text('Hello'), request, validators).status) // 304
 
-// Provide platform services only at your application's composition root.
-const configured = app.pipe(Effect.provide(Digest.layerWebCrypto))
+const handler = HttpEffect.toWebHandler(
+  Effect.succeed(HttpServerResponse.text('Hello')).pipe(
+    ConditionalRequest.middleware({ maxBodyBytes: 1024 }),
+    Effect.provide(Digest.layerWebCrypto),
+  ),
+)
+const response = await handler(new Request('https://example.com/'))
+console.log(response.headers.get('etag')) // A quoted SHA-256 validator
 ```
 
-`configured` still requires the HTTP request service supplied by the server.
-With Effect compression, use `app.pipe(ConditionalRequest.middleware(options), HttpMiddleware.compression(compressionOptions))` so validation runs on the final representation.
-For compressed streams, supply a known validator, preferably weak when it identifies equivalent content across encodings.
-A strong ETag must describe the final response bytes.
+### `csrf`
 
-### Cache-Control
-
-`CacheControl.parse(value)` returns `Result<Directives, ParseError>`.
-Use `Result.match` to handle typed directives or the error's `reason`.
-`CacheControl.format(directives)` validates application configuration and serializes a header, throwing `CacheControl.ConfigError` for invalid configuration.
-`CacheControl.middleware(directives)` applies that header to successful responses.
-
-Supported directives include visibility, freshness, revalidation, immutable, no-transform, only-if-cached, min-fresh, and max-stale.
-Duplicate directives, conflicting visibility, and unsupported directives are rejected.
-
-### Conditional requests
-
-`ConditionalRequest.parseEtag`, `matches`, and `evaluate` are usable without middleware.
-`evaluate({ method, headers, etag, lastModified, exists })` returns `Proceed`, `NotModified`, or `PreconditionFailed`.
-Header record keys must be lowercase, as in Effect HTTP headers.
-Use Effect's existing `Etag` type for validators.
-
-`ConditionalRequest.apply(response, request, validators)` applies validators and conditional response handling to a selected response.
-Automatic `middleware({ maxBodyBytes })` handles GET/HEAD in the pre-response phase and generates SHA-256 validators only for GET responses with bounded `Empty` or `Uint8Array` bodies, using the caller's `Digest` service.
-HEAD uses existing validators but never hashes an empty HEAD body as if it were the GET representation.
-It does not drain streams or read files, raw bodies, or FormData.
-For streaming or static content, supply known validators or use Effect's static server.
-
-**Evaluate write preconditions before performing a mutation.**
-A matching `If-None-Match` becomes `304` for GET/HEAD and `412` for unsafe methods in the pure evaluator.
-A `304` retains validators, Vary, cookies, and selected-representation encoding metadata but removes body-length and body-type headers.
-
-### Public route response cache
+`decide` returns a `Decision` for a request. `middleware` rejects unsafe requests without trusted proof before the handler runs and returns a no-store `403`.
+The config accepts additional exact HTTP(S) origins. The library uses `Schema.URLFromString` and checks the normalized URL properties.
+Invalid configured origins throw `ConfigError` with a `message` and a required `cause` of type `Schema.SchemaError`.
 
 ```ts
-import { CacheControl, ResponseCache } from '@totto2727/effect-http'
+import * as Csrf from '@totto2727/effect-http/csrf'
+import { Effect } from 'effect'
+import { HttpEffect, HttpServerResponse } from 'effect/http'
+
+const config: Csrf.Config = { allowedOrigins: ['https://trusted.example'] }
+const request: Csrf.Request = {
+  method: 'POST',
+  url: 'https://example.com/',
+  origin: 'https://trusted.example',
+}
+const decision: Csrf.Decision = Csrf.decide(request, config)
+console.log(decision.allowed) // true
+
+const handler = HttpEffect.toWebHandler(Csrf.middleware(config)(Effect.succeed(HttpServerResponse.empty())))
+const response = await handler(new Request(request.url, { method: request.method }))
+console.log(response.status) // 403 because the request has no origin proof
+```
+
+### `responseCache`
+
+Use `make` once per intended sharing boundary. Specify capacity, lifetime, body size, and every request header that varies the public response in `Options`.
+The cache bypasses authenticated or cookie-bearing requests and does not buffer streaming responses. Invalid configuration raises `ConfigError`.
+Call the returned `invalidateAll` Effect after writes that change public content.
+
+```ts
+import * as ResponseCache from '@totto2727/effect-http/responseCache'
+import { Effect } from 'effect'
+import { HttpEffect, HttpServerResponse } from 'effect/http'
+
+const options: ResponseCache.Options = {
+  publicRoute: true,
+  capacity: 128,
+  ttlMilliseconds: 60_000,
+  maxBodyBytes: 1024,
+  vary: ['accept-language'],
+}
+const cache = await Effect.runPromise(ResponseCache.make(options))
+const handler = HttpEffect.toWebHandler(
+  cache.middleware(
+    Effect.succeed(
+      HttpServerResponse.text('Public content', {
+        headers: { 'cache-control': 'public, max-age=30' },
+      }),
+    ),
+  ),
+)
+const response = await handler(new Request('https://example.com/', { headers: { 'accept-language': 'en' } }))
+console.log(response.headers.get('vary')) // accept-language
+await Effect.runPromise(cache.invalidateAll)
+```
+
+### `secureHeaders`
+
+`headers` returns a frozen header map. `serializeContentSecurityPolicy` formats a static CSP. `middleware` applies the policy and removes `X-Powered-By`.
+Set CSP for the resources your application uses. Enable HSTS only for an HTTPS-only deployment. Invalid policy throws `ConfigError`.
+
+```ts
+import * as SecureHeaders from '@totto2727/effect-http/secureHeaders'
 import { Effect } from 'effect'
 import { HttpServerResponse } from 'effect/http'
 
-const program = Effect.gen(function* () {
-  const cache = yield* ResponseCache.make({
-    publicRoute: true,
-    capacity: 128,
-    ttlMilliseconds: 60_000,
-    maxBodyBytes: 64 * 1024,
-    vary: ['accept-language'],
-  })
-  const route = Effect.succeed(HttpServerResponse.text('Public content')).pipe(
-    CacheControl.middleware({ public: true, maxAge: 30 }),
-    cache.middleware,
-  )
-  // Keep route and cache.invalidateAll together in the application service.
-  return { route, invalidate: cache.invalidateAll }
-})
+const directive: SecureHeaders.CspDirective = 'default-src'
+const policy: SecureHeaders.ContentSecurityPolicy = { [directive]: ["'self'"] }
+const config: SecureHeaders.Config = { contentSecurityPolicy: policy }
+console.log(SecureHeaders.serializeContentSecurityPolicy(policy)) // default-src 'self'
+console.log(SecureHeaders.headers(config)['x-frame-options']) // DENY
+
+const response = await Effect.runPromise(
+  SecureHeaders.middleware(config)(Effect.succeed(HttpServerResponse.text('Hello'))),
+)
+console.log(response.headers['content-security-policy']) // default-src 'self'
 ```
 
-Create one cache per intended sharing boundary, not once per request.
-`publicRoute: true` is a caller guarantee that output depends only on the request target, host, and declared header variants, never undeclared identity or headers.
-The cache stores only successful GET responses with bounded in-memory bodies.
+## Development
 
-Authorization, Cookie, range, conditional requests, Pragma, and request freshness constraints bypass reuse and storage.
-Responses with Set-Cookie, Expires, private/no-store/no-cache, unknown or undeclared Vary, streaming bodies, or SSE content are not stored.
-Response max-age/s-maxage and existing Age/Date limit the configured lifetime, and hits receive an updated Age.
-Every configured variant participates in the key and is emitted in Vary on stored responses, even if the origin omits it.
+For project structure and development commands, see [AGENTS.md](./AGENTS.md).
+See the [Hono import-path table](./docs/hono-compatibility.md) and [upstream record](./docs/upstream-differences.md) for migration details.
 
-QUERY caching, stale serving, and background revalidation are not supported.
-Call `invalidateAll` after writes, including mutations outside the cached route.
-Invalidation prevents pending reads from repopulating the cache but does not cancel their responses.
+## License
 
-## CSRF and security headers
-
-`Csrf.decide({ method, url, origin, secFetchSite }, config)` exposes the same decision used by `Csrf.middleware(config)`.
-`allowedOrigins` accepts additional exact origins, not wildcards or URL paths.
-GET, HEAD, and OPTIONS pass without proof.
-Unsafe methods, including JSON requests, require a trusted Origin or same-origin Fetch Metadata, and contradictory metadata is rejected.
-The middleware does not read forwarded headers, rejects with `403` and `Cache-Control: no-store` before the handler runs, and merges `Origin` and `Sec-Fetch-Site` into Vary.
-Relative server targets require Host and use the server request's protocol, defaulting to HTTP as Effect does.
-For TLS termination, configure trusted proxy handling at the application's boundary so the request carries the correct protocol.
-Use this policy on browser-authenticated routes, not as authentication for non-browser clients that can forge these headers.
-
-`SecureHeaders.headers(config)` is a pure serializer.
-`SecureHeaders.serializeContentSecurityPolicy(policy)` formats a typed static CSP and rejects header and directive delimiter injection.
-`SecureHeaders.middleware(config)` applies the serialized policy and removes `X-Powered-By`.
-Defaults include nosniff, frame denial, no-referrer, same-origin opener policy, and same-origin resource policy.
-These defaults may require adjustment for embedded documents and cross-origin resources.
-HSTS and CSP are opt-in because deployment and resource policies are application-specific.
-Nonce generation, rendering integration, and reporting are not included.
-
-## Scope and upstream
-
-See the [Hono import-path table](./docs/hono-compatibility.md) for API mappings and the [upstream record](./docs/upstream-differences.md) for pinned revisions and policy differences.
-Application rendering and hosting remain in [effront](https://github.com/totto2727-org/effront).
-
-## Development and license
-
-See [AGENTS.md](./AGENTS.md) for maintenance and validation instructions.
-The package is MIT licensed.
-See [NOTICE](./NOTICE) for the Hono upstream notice.
+MIT. See [NOTICE](./NOTICE) for the Hono upstream notice.
 
 _This README was generated from the [share-artifact skill](https://raw.githubusercontent.com/totto2727-org/agent/refs/heads/main/plugins/totto2727-coding/skills/share-artifact/SKILL.md) and [README template](https://raw.githubusercontent.com/totto2727-org/agent/refs/heads/main/plugins/totto2727-coding/skills/share-artifact/readme/template.md)._

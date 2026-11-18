@@ -51,7 +51,20 @@ export default defineConfig({
     ],
   },
   test: { include: ['src/**/*.test.ts'] },
-  pack: { entry: ['src/index.ts'], format: ['esm'], platform: 'neutral', dts: true, clean: true },
+  pack: {
+    entry: [
+      'src/accepts.ts',
+      'src/cacheControl.ts',
+      'src/conditionalRequest.ts',
+      'src/csrf.ts',
+      'src/responseCache.ts',
+      'src/secureHeaders.ts',
+    ],
+    format: ['esm'],
+    platform: 'neutral',
+    dts: true,
+    clean: true,
+  },
   run: {
     tasks: {
       build: {

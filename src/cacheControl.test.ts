@@ -1,11 +1,14 @@
 import { Array, Effect, Result, String } from 'effect'
 import * as HttpEffect from 'effect/http/HttpEffect'
 import * as HttpServerResponse from 'effect/http/HttpServerResponse'
-import { describe, expect, it } from 'vite-plus/test'
+import { describe, expect, expectTypeOf, it } from 'vite-plus/test'
 
-import { CacheControl } from './index.ts'
+import * as CacheControl from './cacheControl.ts'
 
 describe('CacheControl', () => {
+  it.each(['public\n', 'max-age=1\r', 'public\r\n'])('rejects terminal header controls: %j', (input) => {
+    expect(Result.isFailure(CacheControl.parse(input))).toBe(true)
+  })
   it('parses and formats typed directives', () => {
     const parsed = CacheControl.parse('public, max-age="60", immutable')
     expect(Result.isSuccess(parsed) && parsed.success).toEqual({ public: true, maxAge: 60, immutable: true })
@@ -41,6 +44,12 @@ describe('CacheControl', () => {
   it.each([
     ['public, private, ,', 'Malformed directive'],
     ['max-age=1, MAX-AGE', 'Duplicate max-age'],
+    ['max-age=1, MAX-AGE="x"', 'Malformed directive'],
+    ['max-age=1, MAX-AGE=9007199254740992', 'Duplicate max-age'],
+    ['no-store=9007199254740992', 'Unexpected value for no-store'],
+    ['max-age=9007199254740992', 'Invalid seconds'],
+    ['max-age=', 'Malformed directive'],
+    ['\t ', 'Empty Cache-Control'],
     ['unknown, max-age', 'Unsupported directive unknown'],
     ['public, private', 'Conflicting visibility'],
   ])('reports the first error for %s', (input, reason) => {
@@ -51,6 +60,20 @@ describe('CacheControl', () => {
   it('accepts HTTP optional whitespace', () => {
     const parsed = CacheControl.parse('\tpublic ,\tmax-age=60\t')
     expect(Result.isSuccess(parsed) && parsed.success).toEqual({ public: true, maxAge: 60 })
+  })
+  it('applies the header size and directive count ceilings before parsing directive semantics', () => {
+    const parseError = (input: string) => Result.getOrThrow(Result.flip(CacheControl.parse(input))).reason
+    expect(Result.getOrThrow(CacheControl.parse(`public${String.repeat(8186)(' ')}`))).toEqual({ public: true })
+    expect(parseError(`public${String.repeat(8187)(' ')}`)).toBe('Invalid header bytes or length')
+    expect(parseError(String.repeat(64)('public,') + 'public')).toBe('Too many directives')
+    expect(parseError(String.repeat(63)('public,') + 'public')).toBe('Duplicate public')
+  })
+  it('preserves parsed seconds as readonly numbers distinct from unvalidated config input', () => {
+    const parsed = Result.getOrThrow(CacheControl.parse('max-age="00060", min-fresh=9007199254740991, max-stale'))
+    expect(parsed).toEqual({ maxAge: 60, minFresh: 9007199254740991, maxStale: true })
+    expectTypeOf(parsed.maxAge).toExtend<number | undefined>()
+    expectTypeOf<number>().not.toExtend<typeof parsed.maxAge>()
+    expect(CacheControl.format(parsed)).toBe('max-age=60, min-fresh=9007199254740991, max-stale')
   })
   it('rejects invalid output configuration', () => {
     expect(() => CacheControl.format({ maxAge: -1 })).toThrow(CacheControl.ConfigError)

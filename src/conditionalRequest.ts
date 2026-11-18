@@ -6,49 +6,66 @@ import * as HttpEffect from 'effect/http/HttpEffect'
 import * as HttpServerRequest from 'effect/http/HttpServerRequest'
 import * as HttpServerResponse from 'effect/http/HttpServerResponse'
 
-import * as HttpDate from './internal/HttpDate.ts'
+import * as HttpDate from './internal/httpDate.ts'
 
 export class ConfigError extends Data.TaggedError('ConditionalRequestConfigError')<{
   readonly message: string
 }> {}
 
 const Tags = Data.taggedEnum<Etag.Etag>()
-const isBodyLimit = Schema.is(Schema.Natural)
+const BodyLimit = Schema.Natural.pipe(Schema.brand('ConditionalRequestBodyLimit'))
+const EtagHeaderLength = Schema.isMaxLength(8192)
+// Use an absolute end assertion: `$` alone also matches before a final newline.
+const EtagOpaqueValue = Schema.String.check(Schema.isPattern(/^[\x21\x23-\x7e\x80-\xff]*(?![\s\S])/)).pipe(
+  Schema.brand('EtagOpaqueValue'),
+)
+const EtagWire = Schema.String.check(EtagHeaderLength).pipe(
+  Schema.decodeTo(
+    Schema.Union([
+      Schema.TemplateLiteralParser(['"', EtagOpaqueValue, '"']),
+      Schema.TemplateLiteralParser(['W/"', EtagOpaqueValue, '"']),
+    ]),
+  ),
+)
+type ParsedEtag = Readonly<Etag.Etag & { readonly value: typeof EtagOpaqueValue.Type }>
+const ParsedTags = Data.taggedEnum<ParsedEtag>()
+const toEtag = ([prefix, value]: typeof EtagWire.Type): ParsedEtag =>
+  prefix === 'W/"' ? ParsedTags.Weak({ value }) : ParsedTags.Strong({ value })
+const decodeEtag = Schema.decodeUnknownOption(EtagWire)
 
-export const parseEtag = (value: string): Etag.Etag | undefined => {
-  if (String.length(value) > 8192) return undefined
-  return String.match(/^(W\/)?"([\x21\x23-\x7e\x80-\xff]*)"$/)(value).pipe(
-    Option.filter((match) => match[0] === value),
-    Option.flatMap((match) =>
-      Option.fromNullishOr(match[2]).pipe(
-        Option.map((value) => (match[1] ? Tags.Weak({ value }) : Tags.Strong({ value }))),
-      ),
-    ),
-    Option.getOrUndefined,
-  )
-}
+export const parseEtag = (value: string): ParsedEtag | undefined =>
+  decodeEtag(value).pipe(Option.map(toEtag), Option.getOrUndefined)
 
 export const matches = (left: Etag.Etag, right: Etag.Etag, strong = false): boolean =>
   left.value === right.value && (!strong || (left._tag === 'Strong' && right._tag === 'Strong'))
 
-const listMatches = (value: string, tag: Etag.Etag | undefined, exists: boolean, strong: boolean): boolean => {
-  if (String.length(value) > 8192 || Option.isSome(String.match(/[^\t\x20-\xff]|\x7f/)(value))) return false
+const EtagListHeader = Schema.String.check(
+  EtagHeaderLength,
+  Schema.isPattern(/^[\t\x20-\x7e\x80-\xff]*(?![\s\S])/),
+).pipe(Schema.brand('EtagListHeader'))
+const EtagList = Schema.Array(EtagWire).check(Schema.isBetweenLength(1, 64)).pipe(Schema.brand('EtagList'))
+const decodeEtagListHeader = Schema.decodeUnknownOption(EtagListHeader)
+const decodeEtagList = Schema.decodeUnknownOption(EtagList)
+
+const matchEtagList = (
+  value: typeof EtagListHeader.Type,
+  tag: Etag.Etag | undefined,
+  exists: boolean,
+  strong: boolean,
+): boolean => {
   const input = String.replace(/^[\t ]+|[\t ]+$/g, '')(value)
   if (input === '*') return exists
-  // Sticky matching stops at malformed input. Require complete coverage before accepting any tag.
-  const items = Array.fromIterable(String.matchAll(/[\t ]*((?:W\/)?"[\x21\x23-\x7e\x80-\xff]*")[\t ]*(,|$)/gy)(input))
+  // Scan quoted tokens without validating their contents. Require complete coverage before comparing any tag.
+  const items = Array.fromIterable(String.matchAll(/[\t ]*([^,"\t ]*"[^"]*")[\t ]*(,|$)/gy)(input))
   const complete = Array.reduce(items, 0, (length, item) => length + String.length(item[0])) === String.length(input)
-  return (
-    items.length > 0 &&
-    items.length <= 64 &&
-    complete &&
-    !String.endsWith(',')(input) &&
-    Array.some(items, (item) => {
-      const candidate = Predicate.isNullish(item[1]) ? undefined : parseEtag(item[1])
-      return Predicate.isNotNullish(candidate) && Predicate.isNotNullish(tag) && matches(candidate, tag, strong)
-    })
+  if (!complete || String.endsWith(',')(input) || Predicate.isNullish(tag)) return false
+  return Option.exists(decodeEtagList(Array.map(items, (item) => item[1])), (entries) =>
+    Array.some(entries, (entry) => matches(toEtag(entry), tag, strong)),
   )
 }
+
+const listMatches = (value: string, tag: Etag.Etag | undefined, exists: boolean, strong: boolean): boolean =>
+  Option.exists(decodeEtagListHeader(value), (header) => matchEtagList(header, tag, exists, strong))
 
 export interface Validators {
   readonly etag?: Etag.Etag | undefined
@@ -60,30 +77,40 @@ export interface Evaluation extends Validators {
   readonly headers: Readonly<Record<string, string | undefined>>
 }
 export type Decision = 'Proceed' | 'NotModified' | 'PreconditionFailed'
-const date = (value: string): number | undefined =>
-  HttpDate.parse(value).pipe(Option.map(DateTime.toEpochMillis), Option.getOrUndefined)
 
 /** Evaluate write preconditions before running the write. Response middleware cannot protect side effects. */
-export const evaluate = ({ method, headers, etag, lastModified, exists = true }: Evaluation): Decision => {
-  const retrieval = method === 'GET' || method === 'HEAD'
-  const modified = Option.fromNullishOr(lastModified).pipe(
-    Option.flatMap(DateTime.make),
-    Option.map((value) => DateTime.toEpochMillis(DateTime.startOf(value, 'second'))),
-    Option.getOrUndefined,
+export const evaluate = ({ lastModified, ...input }: Evaluation): Decision =>
+  evaluatePreconditions(
+    input,
+    Option.fromNullishOr(lastModified).pipe(
+      Option.flatMap(DateTime.make),
+      Option.map(DateTime.startOf('second')),
+      Option.getOrUndefined,
+    ),
   )
+
+const evaluatePreconditions = (
+  { method, headers, etag, exists = true }: Omit<Evaluation, 'lastModified'>,
+  modified: DateTime.Utc | undefined,
+): Decision => {
+  const retrieval = method === 'GET' || method === 'HEAD'
   const ifMatch = headers['if-match']
   if (Predicate.isNotNullish(ifMatch) && !listMatches(ifMatch, etag, exists, true)) return 'PreconditionFailed'
   const unmodified = headers['if-unmodified-since']
   if (Predicate.isNullish(ifMatch) && Predicate.isNotNullish(unmodified) && Predicate.isNotNullish(modified)) {
-    const limit = date(unmodified)
-    if (Predicate.isNotNullish(limit) && modified > limit) return 'PreconditionFailed'
+    if (Option.exists(HttpDate.parse(unmodified), (limit) => DateTime.isGreaterThan(modified, limit)))
+      return 'PreconditionFailed'
   }
   const none = headers['if-none-match']
   if (Predicate.isNotNullish(none)) {
     if (listMatches(none, etag, exists, false)) return retrieval ? 'NotModified' : 'PreconditionFailed'
   } else if (retrieval && Predicate.isNotNullish(modified) && Predicate.isNotNullish(headers['if-modified-since'])) {
-    const limit = date(headers['if-modified-since'])
-    if (Predicate.isNotNullish(limit) && modified <= limit) return 'NotModified'
+    if (
+      Option.exists(HttpDate.parse(headers['if-modified-since']), (limit) =>
+        DateTime.isLessThanOrEqualTo(modified, limit),
+      )
+    )
+      return 'NotModified'
   }
   return 'Proceed'
 }
@@ -98,8 +125,14 @@ export const apply = (
     Predicate.isNullish(response.headers['etag']) && Predicate.isNotNullish(validators.etag)
       ? Etag.toString(validators.etag)
       : undefined
-  if (Predicate.isNotNullish(etag) && Predicate.isNullish(parseEtag(etag)))
-    throw new ConfigError({ message: 'Invalid ETag' })
+  const configuredEtag = Option.fromNullishOr(etag).pipe(
+    Option.map((value) =>
+      decodeEtag(value).pipe(
+        Option.map(toEtag),
+        Option.getOrThrowWith(() => new ConfigError({ message: 'Invalid ETag' })),
+      ),
+    ),
+  )
   const withEtag = Predicate.isNullish(etag) ? response : HttpServerResponse.setHeader(response, 'etag', etag)
   const lastModified =
     Predicate.isNullish(response.headers['last-modified']) && Predicate.isNotNullish(validators.lastModified)
@@ -112,17 +145,21 @@ export const apply = (
     ? withEtag
     : HttpServerResponse.setHeader(withEtag, 'last-modified', lastModified)
   if (response.status !== 200) return output
-  const decision = evaluate({
-    method: request.method,
-    headers: request.headers,
-    exists: validators.exists,
-    etag: Predicate.isNullish(output.headers['etag']) ? undefined : parseEtag(output.headers['etag']),
-    lastModified: Option.fromNullishOr(output.headers['last-modified']).pipe(
-      Option.flatMap(HttpDate.parse),
-      Option.map(DateTime.toDateUtc),
-      Option.getOrUndefined,
-    ),
-  })
+  const decision = evaluatePreconditions(
+    {
+      method: request.method,
+      headers: request.headers,
+      exists: validators.exists,
+      etag: Option.getOrElse(configuredEtag, () =>
+        Option.fromNullishOr(output.headers['etag']).pipe(
+          Option.flatMap(decodeEtag),
+          Option.map(toEtag),
+          Option.getOrUndefined,
+        ),
+      ),
+    },
+    Option.fromNullishOr(output.headers['last-modified']).pipe(Option.flatMap(HttpDate.parse), Option.getOrUndefined),
+  )
   if (decision === 'Proceed') return output
   return HttpServerResponse.empty({
     status: decision === 'NotModified' ? 304 : 412,
@@ -142,7 +179,9 @@ export const apply = (
  * Compression then runs first. Compressed streams require caller-supplied validators, preferably weak across encodings.
  */
 export const middleware = (options: { readonly maxBodyBytes: number }) => {
-  if (!isBodyLimit(options.maxBodyBytes)) throw new ConfigError({ message: 'Invalid body limit' })
+  const maxBodyBytes = Schema.decodeUnknownOption(BodyLimit)(options.maxBodyBytes).pipe(
+    Option.getOrThrowWith(() => new ConfigError({ message: 'Invalid body limit' })),
+  )
   return <E, R>(
     handler: Effect.Effect<HttpServerResponse.HttpServerResponse, E, R>,
   ): Effect.Effect<HttpServerResponse.HttpServerResponse, E, R | HttpServerRequest.HttpServerRequest | Digest.Digest> =>
@@ -156,7 +195,7 @@ export const middleware = (options: { readonly maxBodyBytes: number }) => {
           if (response.status !== 200 || (body._tag !== 'Empty' && body._tag !== 'Uint8Array'))
             return apply(response, request)
           const bytes = body._tag === 'Empty' ? new Uint8Array() : body.body
-          if (bytes.length > options.maxBodyBytes) return apply(response, request)
+          if (bytes.length > maxBodyBytes) return apply(response, request)
           const value = yield* digest.digestHex(Digest.sha256, bytes)
           return apply(response, request, { etag: Tags.Strong({ value }) })
         }),

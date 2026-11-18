@@ -4,7 +4,7 @@ import * as HttpServerRequest from 'effect/http/HttpServerRequest'
 import * as HttpServerResponse from 'effect/http/HttpServerResponse'
 import { describe, expect, it } from 'vite-plus/test'
 
-import { ResponseCache } from './index.ts'
+import * as ResponseCache from './responseCache.ts'
 
 const options = {
   capacity: 2,
@@ -35,6 +35,7 @@ describe('ResponseCache', () => {
     { ttlMilliseconds: NaN },
     { vary: ['authorization'] },
     { vary: ['bad,header'] },
+    { vary: ['accept-language\n'] },
   ])('reports invalid configuration through its generated error %j', async (overrides) => {
     const exit = await Effect.runPromiseExit(ResponseCache.make({ ...options, ...overrides }))
     const error = Result.getOrThrow(Exit.findDefect(exit))
@@ -116,6 +117,8 @@ describe('ResponseCache', () => {
     { 'content-type': 'text/event-stream' },
     { date: 'Tue, 31 Feb 2026 00:00:00 GMT' },
     { age: '9'.repeat(17) },
+    { age: '0\n' },
+    { vary: 'accept-language\n' },
     { vary: Array(65).fill('accept-language').join(',') },
   ])('does not store unsafe response %j', async (headers) => {
     let count = 0

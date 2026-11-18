@@ -3,7 +3,12 @@ import { Digest } from 'effect/crypto'
 import { HttpEffect, HttpServerResponse } from 'effect/http'
 import { expect, test } from 'vite-plus/test'
 
-import { Accepts, CacheControl, ConditionalRequest, Csrf, ResponseCache, SecureHeaders } from './index.ts'
+import * as Accepts from './accepts.ts'
+import * as CacheControl from './cacheControl.ts'
+import * as ConditionalRequest from './conditionalRequest.ts'
+import * as Csrf from './csrf.ts'
+import * as ResponseCache from './responseCache.ts'
+import * as SecureHeaders from './secureHeaders.ts'
 
 test('negotiation, public cache, validators and security policies compose through real Web requests', async () => {
   let executions = 0

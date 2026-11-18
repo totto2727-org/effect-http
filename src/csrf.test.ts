@@ -1,8 +1,8 @@
-import { Context, Effect } from 'effect'
+import { Context, Effect, Result, Schema } from 'effect'
 import { Headers, HttpClientRequest, HttpEffect, HttpServerRequest, HttpServerResponse } from 'effect/http'
 import { describe, expect, it } from 'vite-plus/test'
 
-import { Csrf } from './index.ts'
+import * as Csrf from './csrf.ts'
 
 const target = 'https://app.example/action'
 const request = { method: 'POST', url: target }
@@ -24,20 +24,31 @@ describe('Csrf pure decisions', () => {
     'null',
     '',
     'https://app.example/path',
-    'https://app.example/path/..',
     'https://app.example\u007f',
     'https://user@app.example',
-    'https://@app.example',
     'https://app.example?x',
     'https://app.example#x',
     'https://app.example https://evil.example',
     'https://app.example\r\nx: y',
-    'https:\\app.example',
     'data:text/plain,test',
   ])('rejects malformed Origin %j', (origin) => {
     expect(Csrf.decide({ ...request, origin, secFetchSite: 'same-origin' })).toEqual({
       allowed: false,
       reason: 'invalid-origin',
+    })
+  })
+  it.each([
+    'https://app.example/path/..',
+    'https://@app.example',
+    'https:\\app.example',
+    'https://app.example\t',
+    'https://app.example?',
+    'https://app.example#',
+  ])('uses standard URL normalization for %j without authorizing a different origin', (origin) => {
+    expect(Csrf.decide({ ...request, origin })).toEqual({ allowed: true })
+    expect(Csrf.decide({ ...request, origin: origin.replaceAll('app.example', 'evil.example') })).toEqual({
+      allowed: false,
+      reason: 'untrusted-origin',
     })
   })
   it('does not let metadata override Origin and rejects contradictory claims', () => {
@@ -77,7 +88,7 @@ describe('Csrf pure decisions', () => {
   })
   it('validates configuration first and evaluates target, origin, and metadata in that order', () => {
     expect(() => Csrf.decide({ method: 'GET', url: '' }, { allowedOrigins: ['null', '*'] })).toThrow(
-      new Csrf.ConfigError('Invalid allowed origin: null'),
+      'Invalid allowed origin: null',
     )
     const invalidOrigin = { ...request, origin: 'null', secFetchSite: 'none' }
     expect(Csrf.decide({ ...invalidOrigin, url: '/relative' })).toEqual({ allowed: false, reason: 'invalid-target' })
@@ -87,11 +98,21 @@ describe('Csrf pure decisions', () => {
       reason: 'untrusted-origin',
     })
   })
-  it('exposes a generated ConfigError tag and keeps positional message and cause arguments', () => {
-    const error = new Csrf.ConfigError('invalid configuration', { cause: false })
+  it('requires and preserves the schema decoding cause on ConfigError', () => {
+    const failure = Schema.decodeUnknownResult(Schema.String)(null)
+    if (Result.isSuccess(failure)) throw new Error('expected schema failure')
+    const cause = failure.failure
+    const error = new Csrf.ConfigError({ message: 'invalid configuration', cause })
     expect(error).toBeInstanceOf(Error)
-    expect(error).toMatchObject({ _tag: 'ConfigError', message: 'invalid configuration', cause: false })
-    expect(new Csrf.ConfigError().message).toBe('')
+    expect(error).toMatchObject({ _tag: 'ConfigError', message: 'invalid configuration' })
+    expect(error.cause).toBe(cause)
+    expect(error.cause).toBeInstanceOf(Schema.SchemaError)
+    // @ts-expect-error Schema decoding causes cannot be omitted.
+    const withoutCause = () => new Csrf.ConfigError({ message: 'invalid configuration' })
+    expect(withoutCause).toBeTypeOf('function')
+    expect(() => Csrf.middleware({ allowedOrigins: ['null'] })).toThrow(
+      expect.objectContaining({ cause: expect.any(Schema.SchemaError) }),
+    )
   })
 })
 

@@ -1,4 +1,4 @@
-import { Data, Effect, FileSystem, Layer, Stream } from 'effect'
+import { Data, DateTime, Effect, FileSystem, Layer, Option, Stream, String } from 'effect'
 import * as Digest from 'effect/crypto/Digest'
 import type * as Etag from 'effect/http/Etag'
 import * as Headers from 'effect/http/Headers'
@@ -6,14 +6,24 @@ import * as HttpEffect from 'effect/http/HttpEffect'
 import * as HttpMiddleware from 'effect/http/HttpMiddleware'
 import * as HttpPlatform from 'effect/http/HttpPlatform'
 import * as HttpServerResponse from 'effect/http/HttpServerResponse'
-import { describe, expect, it } from 'vite-plus/test'
+import { describe, expect, expectTypeOf, it } from 'vite-plus/test'
 
-import { ConditionalRequest } from './index.ts'
+import * as ConditionalRequest from './conditionalRequest.ts'
+import * as HttpDate from './internal/httpDate.ts'
 
 const Tags = Data.taggedEnum<Etag.Etag>()
 const etag = Tags.Strong({ value: 'a,b' })
 
 describe('ConditionalRequest', () => {
+  it('distinguishes parsed values from unchecked input without breaking Effect interoperability', () => {
+    type ParsedEtag = NonNullable<ReturnType<typeof ConditionalRequest.parseEtag>>
+    type ParsedDate = Option.Option.Value<ReturnType<typeof HttpDate.parse>>
+    expectTypeOf<ParsedEtag>().toExtend<Etag.Etag>()
+    expectTypeOf<string>().not.toExtend<ParsedEtag['value']>()
+    expectTypeOf<ParsedDate>().toExtend<DateTime.Utc>()
+    expectTypeOf<DateTime.Utc>().not.toExtend<ParsedDate>()
+    expectTypeOf<string>().not.toExtend<ParsedDate>()
+  })
   it('parses Effect tags and distinguishes weak and strong comparison', () => {
     expect(ConditionalRequest.parseEtag('W/"a,b"')).toEqual(Tags.Weak({ value: 'a,b' }))
     expect(ConditionalRequest.parseEtag('"bad\n"')).toBeUndefined()
@@ -57,6 +67,21 @@ describe('ConditionalRequest', () => {
       ConditionalRequest.evaluate({ method: 'GET', etag, headers: { 'if-none-match': `${allowed},"last"` } }),
     ).toBe('Proceed')
   })
+  it('counts the entire ETag including quotes and the weak prefix at the byte limit', () => {
+    const opaque = String.repeat(8188)('é')
+    expect(ConditionalRequest.parseEtag(`W/"${opaque}"`)).toEqual(Tags.Weak({ value: opaque }))
+    expect(ConditionalRequest.parseEtag(`W/"${opaque}x"`)).toBeUndefined()
+    expect(ConditionalRequest.parseEtag(`"${opaque}xx"`)).toEqual(Tags.Strong({ value: `${opaque}xx` }))
+    expect(ConditionalRequest.parseEtag('""')).toEqual(Tags.Strong({ value: '' }))
+  })
+  it.each(['"a,b", "bad tag"', '"a,b", "bad\ttag"', '"a,b", w/"other"', '"a,b", "\x7f"', '"a,b", "Ā"'])(
+    'rejects a match followed by a token with invalid wire format: %s',
+    (value) => {
+      expect(ConditionalRequest.evaluate({ method: 'PUT', etag, headers: { 'if-match': value } })).toBe(
+        'PreconditionFailed',
+      )
+    },
+  )
   it('throws generated configuration errors rather than plain errors', () => {
     expect(() => ConditionalRequest.middleware({ maxBodyBytes: -1 })).toThrow(ConditionalRequest.ConfigError)
     expect(() =>
@@ -110,6 +135,20 @@ describe('ConditionalRequest', () => {
         headers: { 'if-modified-since': value },
       }),
     ).toBe('Proceed')
+  })
+  it('uses the canonical Last-Modified date in a real conditional HTTP response', async () => {
+    const lastModified = 'Wed, 01 Jan 2025 00:00:00 GMT'
+    const handler = HttpEffect.toWebHandler(
+      ConditionalRequest.middleware({ maxBodyBytes: 0 })(
+        Effect.succeed(HttpServerResponse.text('body', { headers: { 'last-modified': lastModified } })),
+      ).pipe(Effect.provide(Digest.layerWebCrypto)),
+    )
+    const request = (date: string) =>
+      handler(new Request('https://example.com/', { headers: { 'if-modified-since': date } }))
+    const matched = await request(lastModified)
+    expect(matched.status).toBe(304)
+    expect(matched.headers.get('last-modified')).toBe(lastModified)
+    expect((await request('Thu, 01 Jan 2025 00:00:00 GMT')).status).toBe(200)
   })
   it.each(['Sat, 01 Jan 0000 00:00:00 GMT', 'Mon, 01 Jan 0001 00:00:00 GMT', 'Thu, 01 Jan 0099 00:00:00 GMT'])(
     'ignores low-year preconditions without broadening the accepted date grammar: %s',
