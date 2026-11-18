@@ -8,7 +8,7 @@ const target = 'https://app.example/action'
 const request = { method: 'POST', url: target }
 
 describe('Csrf pure decisions', () => {
-  it.each(['GET', 'HEAD', 'OPTIONS'])('bypasses safe %s', (method) => {
+  it.each(['GET', 'HEAD', 'OPTIONS', 'get'])('bypasses safe %s', (method) => {
     expect(Csrf.decide({ method, url: '', origin: 'null', secFetchSite: 'cross-site' })).toEqual({ allowed: true })
   })
   it.each(['POST', 'PUT', 'PATCH', 'DELETE', 'CUSTOM'])('requires proof for %s', (method) => {
@@ -24,6 +24,8 @@ describe('Csrf pure decisions', () => {
     'null',
     '',
     'https://app.example/path',
+    'https://app.example/path/..',
+    'https://app.example\u007f',
     'https://user@app.example',
     'https://@app.example',
     'https://app.example?x',
@@ -73,6 +75,24 @@ describe('Csrf pure decisions', () => {
       reason: 'invalid-target',
     })
   })
+  it('validates configuration first and evaluates target, origin, and metadata in that order', () => {
+    expect(() => Csrf.decide({ method: 'GET', url: '' }, { allowedOrigins: ['null', '*'] })).toThrow(
+      new Csrf.ConfigError('Invalid allowed origin: null'),
+    )
+    const invalidOrigin = { ...request, origin: 'null', secFetchSite: 'none' }
+    expect(Csrf.decide({ ...invalidOrigin, url: '/relative' })).toEqual({ allowed: false, reason: 'invalid-target' })
+    expect(Csrf.decide(invalidOrigin)).toEqual({ allowed: false, reason: 'invalid-origin' })
+    expect(Csrf.decide({ ...invalidOrigin, origin: 'https://evil.example' })).toEqual({
+      allowed: false,
+      reason: 'untrusted-origin',
+    })
+  })
+  it('exposes a generated ConfigError tag and keeps positional message and cause arguments', () => {
+    const error = new Csrf.ConfigError('invalid configuration', { cause: false })
+    expect(error).toBeInstanceOf(Error)
+    expect(error).toMatchObject({ _tag: 'ConfigError', message: 'invalid configuration', cause: false })
+    expect(new Csrf.ConfigError().message).toBe('')
+  })
 })
 
 describe('Csrf HTTP middleware', () => {
@@ -90,7 +110,10 @@ describe('Csrf HTTP middleware', () => {
   })
   it('passes accepted unsafe requests and merges Vary without duplicates', async () => {
     const app = Effect.succeed(
-      HttpServerResponse.text('accepted', { status: 201, headers: { vary: 'Accept, origin' } }),
+      HttpServerResponse.text('accepted', {
+        status: 201,
+        headers: { vary: 'sec-fetch-site, Accept, origin, 10, X-Custom, 2, , aCCEPT, ORIGIN, 10, __proto__' },
+      }),
     )
     const handler = HttpEffect.toWebHandler(Csrf.middleware()(app))
     const response = await handler(
@@ -98,7 +121,7 @@ describe('Csrf HTTP middleware', () => {
     )
     expect(response.status).toBe(201)
     expect(await response.text()).toBe('accepted')
-    expect(response.headers.get('vary')).toBe('Accept, Origin, Sec-Fetch-Site')
+    expect(response.headers.get('vary')).toBe('Sec-Fetch-Site, aCCEPT, Origin, 10, X-Custom, 2, __proto__')
   })
   it('does not trust forwarded host or protocol, or permit evil Origin with same-origin metadata', async () => {
     const handler = HttpEffect.toWebHandler(Csrf.middleware()(Effect.succeed(HttpServerResponse.text('unsafe'))))
@@ -147,9 +170,9 @@ describe('Csrf HTTP middleware', () => {
   })
   it('retains wildcard Vary', async () => {
     const handler = HttpEffect.toWebHandler(
-      Csrf.middleware()(Effect.succeed(HttpServerResponse.empty({ headers: { vary: '*' } }))),
+      Csrf.middleware()(Effect.succeed(HttpServerResponse.empty({ headers: { vary: 'Accept, *, origin' } }))),
     )
-    expect((await handler(new Request(target))).headers.get('vary')).toBe('*')
+    expect((await handler(new Request(target))).headers.get('vary')).toBe('Accept, *, origin')
   })
   it('preserves error and environment types', () => {
     class Service extends Context.Service<Service, { readonly value: string }>()('CsrfTestService') {}

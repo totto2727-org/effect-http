@@ -1,5 +1,6 @@
-import { Effect, FileSystem, Layer, Stream } from 'effect'
+import { Data, Effect, FileSystem, Layer, Stream } from 'effect'
 import * as Digest from 'effect/crypto/Digest'
+import type * as Etag from 'effect/http/Etag'
 import * as Headers from 'effect/http/Headers'
 import * as HttpEffect from 'effect/http/HttpEffect'
 import * as HttpMiddleware from 'effect/http/HttpMiddleware'
@@ -9,14 +10,15 @@ import { describe, expect, it } from 'vite-plus/test'
 
 import { ConditionalRequest } from './index.ts'
 
-const etag = { _tag: 'Strong', value: 'a,b' } as const
+const Tags = Data.taggedEnum<Etag.Etag>()
+const etag = Tags.Strong({ value: 'a,b' })
 
 describe('ConditionalRequest', () => {
   it('parses Effect tags and distinguishes weak and strong comparison', () => {
-    expect(ConditionalRequest.parseEtag('W/"a,b"')).toEqual({ _tag: 'Weak', value: 'a,b' })
+    expect(ConditionalRequest.parseEtag('W/"a,b"')).toEqual(Tags.Weak({ value: 'a,b' }))
     expect(ConditionalRequest.parseEtag('"bad\n"')).toBeUndefined()
-    expect(ConditionalRequest.matches(etag, { _tag: 'Weak', value: 'a,b' })).toBe(true)
-    expect(ConditionalRequest.matches(etag, { _tag: 'Weak', value: 'a,b' }, true)).toBe(false)
+    expect(ConditionalRequest.matches(etag, Tags.Weak({ value: 'a,b' }))).toBe(true)
+    expect(ConditionalRequest.matches(etag, Tags.Weak({ value: 'a,b' }), true)).toBe(false)
   })
   it.each(['GET', 'HEAD'])('returns 304 for weak matching %s retrieval', (method) => {
     expect(ConditionalRequest.evaluate({ method, etag, headers: { 'if-none-match': '"other", W/"a,b"' } })).toBe(
@@ -36,6 +38,45 @@ describe('ConditionalRequest', () => {
   })
   it('does not turn malformed lists into a match', () => {
     expect(ConditionalRequest.evaluate({ method: 'GET', etag, headers: { 'if-none-match': '"a,b",' } })).toBe('Proceed')
+  })
+  it.each(['"a,b", garbage', 'garbage, "a,b"', '"a,b",,"other"', '"a,b" , \t'])(
+    'rejects an entire malformed list even when it contains a match: %s',
+    (value) => {
+      expect(ConditionalRequest.evaluate({ method: 'GET', etag, headers: { 'if-none-match': value } })).toBe('Proceed')
+      expect(ConditionalRequest.evaluate({ method: 'PUT', etag, headers: { 'if-match': value } })).toBe(
+        'PreconditionFailed',
+      )
+    },
+  )
+  it('accepts 64 quoted tags, including opaque commas, without accepting a 65th', () => {
+    const allowed = Array(63).fill('"other"').concat('W/"a,b"').join(',')
+    expect(ConditionalRequest.evaluate({ method: 'GET', etag, headers: { 'if-none-match': allowed } })).toBe(
+      'NotModified',
+    )
+    expect(
+      ConditionalRequest.evaluate({ method: 'GET', etag, headers: { 'if-none-match': `${allowed},"last"` } }),
+    ).toBe('Proceed')
+  })
+  it('throws generated configuration errors rather than plain errors', () => {
+    expect(() => ConditionalRequest.middleware({ maxBodyBytes: -1 })).toThrow(ConditionalRequest.ConfigError)
+    expect(() =>
+      ConditionalRequest.apply(
+        HttpServerResponse.text('body'),
+        { method: 'GET', headers: Headers.empty },
+        {
+          etag: Tags.Strong({ value: 'bad"tag' }),
+        },
+      ),
+    ).toThrow(ConditionalRequest.ConfigError)
+    expect(() =>
+      ConditionalRequest.apply(
+        HttpServerResponse.text('body'),
+        { method: 'GET', headers: Headers.empty },
+        {
+          lastModified: new Date(NaN),
+        },
+      ),
+    ).toThrow(ConditionalRequest.ConfigError)
   })
   it('gives If-None-Match precedence over modification time', () => {
     expect(
@@ -70,6 +111,18 @@ describe('ConditionalRequest', () => {
       }),
     ).toBe('Proceed')
   })
+  it.each(['Sat, 01 Jan 0000 00:00:00 GMT', 'Mon, 01 Jan 0001 00:00:00 GMT', 'Thu, 01 Jan 0099 00:00:00 GMT'])(
+    'ignores low-year preconditions without broadening the accepted date grammar: %s',
+    (value) => {
+      expect(
+        ConditionalRequest.evaluate({
+          method: 'PUT',
+          lastModified: new Date('2020-01-01'),
+          headers: { 'if-unmodified-since': value },
+        }),
+      ).toBe('Proceed')
+    },
+  )
   it.each([
     ['GET', 'if-none-match', 304],
     ['PUT', 'if-match', 412],

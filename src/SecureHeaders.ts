@@ -1,4 +1,4 @@
-import { Effect } from 'effect'
+import { Array, Data, Effect, Number, Option, Predicate, Record, Schema, String } from 'effect'
 import { HttpMiddleware, HttpServerResponse } from 'effect/http'
 
 export type CspDirective =
@@ -38,11 +38,13 @@ export interface Config {
   readonly contentSecurityPolicy?: ContentSecurityPolicy
 }
 
-export class ConfigError extends Error {
-  readonly _tag = 'ConfigError'
+export class ConfigError extends Data.TaggedError('ConfigError')<{ readonly message?: string }> {
+  constructor(message?: string) {
+    super(message === undefined ? {} : { message })
+  }
 }
 
-const directives: ReadonlySet<string> = new Set<CspDirective>([
+const directives: readonly CspDirective[] = [
   'default-src',
   'base-uri',
   'child-src',
@@ -65,88 +67,93 @@ const directives: ReadonlySet<string> = new Set<CspDirective>([
   'sandbox',
   'upgrade-insecure-requests',
   'block-all-mixed-content',
-])
+]
+
+const invalidCspToken = String.match(/[^\x21-\x7e]|[;,]/u)
+const isSafeInteger = Schema.is(Schema.Int)
 
 /** Throws ConfigError for invalid directives or tokens, including delimiter and header injection. */
 export const serializeContentSecurityPolicy = (policy: ContentSecurityPolicy): string => {
-  const entries = Object.entries(policy)
-  if (entries.length === 0) throw new ConfigError('Content Security Policy must contain at least one directive')
-  return entries
-    .map(([name, values]) => {
-      if (!directives.has(name) || !Array.isArray(values)) throw new ConfigError(`Invalid CSP directive: ${name}`)
-      if (
-        values.some(
-          (value: unknown) => typeof value !== 'string' || value.length === 0 || /[^\x21-\x7e]|[;,]/u.test(value),
-        )
-      ) {
-        throw new ConfigError(`Invalid CSP value for ${name}`)
-      }
-      if ((name === 'upgrade-insecure-requests' || name === 'block-all-mixed-content') && values.length !== 0) {
-        throw new ConfigError(`${name} does not accept values`)
-      }
-      if (
-        name !== 'sandbox' &&
-        name !== 'upgrade-insecure-requests' &&
-        name !== 'block-all-mixed-content' &&
-        values.length === 0
-      ) {
-        throw new ConfigError(`${name} requires a source expression`)
-      }
-      if (values.includes("'none'") && values.length !== 1)
-        throw new ConfigError("'none' must be the only source expression")
-      return [name, ...values].join(' ')
-    })
-    .join('; ')
+  const entries = Record.toEntries<string, readonly string[] | undefined>(policy)
+  if (Array.isArrayEmpty(entries)) throw new ConfigError('Content Security Policy must contain at least one directive')
+  const serialized = Array.map(entries, ([name, values]) => {
+    if (!Array.some(directives, (directive) => directive === name) || !Array.isArray(values)) {
+      throw new ConfigError(`Invalid CSP directive: ${name}`)
+    }
+    if (
+      Array.some(
+        values,
+        (value: unknown) =>
+          !Predicate.isString(value) || String.isEmpty(value) || Option.isSome(invalidCspToken(value)),
+      )
+    ) {
+      throw new ConfigError(`Invalid CSP value for ${name}`)
+    }
+    const isValueless = name === 'upgrade-insecure-requests' || name === 'block-all-mixed-content'
+    if (isValueless && !Array.isReadonlyArrayEmpty(values)) throw new ConfigError(`${name} does not accept values`)
+    if (!isValueless && name !== 'sandbox' && Array.isReadonlyArrayEmpty(values)) {
+      throw new ConfigError(`${name} requires a source expression`)
+    }
+    if (Array.some(values, (value) => value === "'none'") && Array.length(values) !== 1) {
+      throw new ConfigError("'none' must be the only source expression")
+    }
+    return Array.join([name, ...values], ' ')
+  })
+  return Array.join(serialized, '; ')
 }
 
-const header = (
-  result: Record<string, string>,
-  name: string,
-  value: string | false,
-  allowed: readonly string[],
-): void => {
-  if (value === false) return
-  if (!allowed.includes(value)) throw new ConfigError(`Invalid ${name} policy`)
-  result[name] = value
+type Header = readonly [name: string, value: string]
+
+const header = (name: string, value: string | false, allowed: readonly string[]): Option.Option<Header> => {
+  if (value === false) return Option.none()
+  if (!Array.some(allowed, (policy) => policy === value)) throw new ConfigError(`Invalid ${name} policy`)
+  return Option.some([name, value])
 }
 
 /** Pure policy serialization. Defaults isolate documents/resources and disclose no referrer. */
 export const headers = (config: Config = {}): Readonly<Record<string, string>> => {
-  const result: Record<string, string> = { 'x-content-type-options': 'nosniff' }
-  header(result, 'x-frame-options', config.frameOptions ?? 'DENY', ['DENY', 'SAMEORIGIN'])
-  header(result, 'referrer-policy', config.referrerPolicy ?? 'no-referrer', [
-    'no-referrer',
-    'same-origin',
-    'strict-origin',
-    'strict-origin-when-cross-origin',
-  ])
-  header(result, 'cross-origin-opener-policy', config.crossOriginOpenerPolicy ?? 'same-origin', [
-    'same-origin',
-    'same-origin-allow-popups',
-    'unsafe-none',
-  ])
-  header(result, 'cross-origin-resource-policy', config.crossOriginResourcePolicy ?? 'same-origin', [
-    'same-origin',
-    'same-site',
-    'cross-origin',
-  ])
-  if (config.hsts !== undefined) {
-    const { maxAge, includeSubDomains, preload } = config.hsts
-    if (
-      !Number.isSafeInteger(maxAge) ||
-      maxAge < 0 ||
-      (includeSubDomains !== undefined && typeof includeSubDomains !== 'boolean') ||
-      (preload !== undefined && typeof preload !== 'boolean')
-    )
-      throw new ConfigError('Invalid HSTS configuration')
-    if (preload && (!includeSubDomains || maxAge < 31536000))
-      throw new ConfigError('HSTS preload requires subdomains and at least one year')
-    result['strict-transport-security'] =
-      `max-age=${maxAge}${includeSubDomains ? '; includeSubDomains' : ''}${preload ? '; preload' : ''}`
-  }
-  if (config.contentSecurityPolicy !== undefined)
-    result['content-security-policy'] = serializeContentSecurityPolicy(config.contentSecurityPolicy)
-  return Object.freeze(result)
+  const policies: readonly Option.Option<Header>[] = [
+    Option.some(['x-content-type-options', 'nosniff']),
+    header('x-frame-options', config.frameOptions ?? 'DENY', ['DENY', 'SAMEORIGIN']),
+    header('referrer-policy', config.referrerPolicy ?? 'no-referrer', [
+      'no-referrer',
+      'same-origin',
+      'strict-origin',
+      'strict-origin-when-cross-origin',
+    ]),
+    header('cross-origin-opener-policy', config.crossOriginOpenerPolicy ?? 'same-origin', [
+      'same-origin',
+      'same-origin-allow-popups',
+      'unsafe-none',
+    ]),
+    header('cross-origin-resource-policy', config.crossOriginResourcePolicy ?? 'same-origin', [
+      'same-origin',
+      'same-site',
+      'cross-origin',
+    ]),
+    Option.map(Option.fromUndefinedOr(config.hsts), serializeHsts),
+    Option.map(Option.fromUndefinedOr(config.contentSecurityPolicy), (policy) => [
+      'content-security-policy',
+      serializeContentSecurityPolicy(policy),
+    ]),
+  ]
+  return Object.freeze(Record.fromEntries(Array.getSomes(policies)))
+}
+
+const serializeHsts = ({ maxAge, includeSubDomains, preload }: NonNullable<Config['hsts']>): Header => {
+  if (
+    !isSafeInteger(maxAge) ||
+    Number.isLessThan(maxAge, 0) ||
+    (includeSubDomains !== undefined && !Predicate.isBoolean(includeSubDomains)) ||
+    (preload !== undefined && !Predicate.isBoolean(preload))
+  )
+    throw new ConfigError('Invalid HSTS configuration')
+  if (preload && (!includeSubDomains || Number.isLessThan(maxAge, 31536000)))
+    throw new ConfigError('HSTS preload requires subdomains and at least one year')
+  return [
+    'strict-transport-security',
+    `max-age=${maxAge}${includeSubDomains ? '; includeSubDomains' : ''}${preload ? '; preload' : ''}`,
+  ]
 }
 
 /** Validates once at construction, then applies policy and removes framework disclosure. */

@@ -1,14 +1,13 @@
-import { Effect, Option, Result } from 'effect'
+import { Array, Data, Effect, Iterable, Number, Option, Record, Result, String, pipe } from 'effect'
 import * as HttpServerRequest from 'effect/http/HttpServerRequest'
 
 /** The four independent HTTP preference grammars. */
 export type Kind = 'mediaType' | 'language' | 'encoding' | 'charset'
 
-export interface ParseError {
-  readonly _tag: 'AcceptsParseError'
+export class ParseError extends Data.TaggedError('AcceptsParseError')<{
   readonly kind: Kind
   readonly reason: string
-}
+}> {}
 
 export interface Preference {
   readonly value: string
@@ -32,94 +31,112 @@ const names = {
 const token = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/
 const language = /^[A-Za-z]{1,8}(?:-[A-Za-z0-9]{1,8})*$/
 const quality = /^(?:0(?:\.[0-9]{0,3})?|1(?:\.0{0,3})?)$/
+const matches = (pattern: RegExp, input: string): boolean => Option.isSome(String.match(pattern)(input))
+const isBoundedAscii = (input: string): boolean => input.length <= 8192 && !matches(/[^\x20-\x7e\t]/, input)
 const invalid = (kind: Kind, reason: string): Result.Result<never, ParseError> =>
-  Result.fail({ _tag: 'AcceptsParseError', kind, reason })
+  Result.fail(new ParseError({ kind, reason }))
 
 // Delimiters in quoted strings are data, not list or parameter separators.
-const split = (input: string, delimiter: string): ReadonlyArray<string> | undefined => {
-  const parts: string[] = []
-  let start = 0
-  let quoted = false
-  let escaped = false
-  for (let i = 0; i < input.length; i++) {
-    const character = input[i]
-    if (escaped) escaped = false
-    else if (quoted && character === '\\') escaped = true
-    else if (character === '"') quoted = !quoted
-    else if (!quoted && character === delimiter) {
-      parts.push(input.slice(start, i).trim())
-      start = i + 1
-    }
+const split = (input: string, delimiter: ',' | ';'): ReadonlyArray<string> | undefined => {
+  // The optional closing quote lets the scan report an unterminated string instead of skipping it.
+  const markers = Array.fromIterable(String.matchAll(/"(?:[^"\\]|\\.)*(")?|[;,]/g)(input))
+  if (Array.some(markers, ([marker, closing]) => String.startsWith('"')(marker) && closing === undefined)) {
+    return undefined
   }
-  if (quoted || escaped) return undefined
-  parts.push(input.slice(start).trim())
-  return parts
+  const separators = Array.filterMap(markers, ({ 0: marker, index }) =>
+    marker === delimiter && index !== undefined ? Result.succeed(index) : Result.fail(undefined),
+  )
+  return Array.zipWith(Array.prepend(separators, -1), Array.append(separators, input.length), (left, right) =>
+    pipe(input, String.slice(left + 1, right), String.trim),
+  )
 }
 
 const parameterValue = (input: string): string | undefined => {
-  if (token.test(input)) return input
-  if (!input.startsWith('"') || !input.endsWith('"')) return undefined
-  let value = ''
-  for (let i = 1; i < input.length - 1; i++) {
-    const character = input[i]
-    if (character === '\\') {
-      i++
-      if (i >= input.length - 1) return undefined
-      value += input[i]
-    } else if (character === '"') return undefined
-    else value += character
-  }
-  return value
+  if (matches(token, input)) return input
+  if (!matches(/^"(?:[^"\\]|\\.)*"$/, input)) return undefined
+  return pipe(input, String.slice(1, -1), String.replaceAll(/\\(.)/g, '$1'))
 }
 
 const validValue = (kind: Kind, value: string, offered: boolean): boolean => {
   if (kind === 'mediaType') {
-    const [type, subtype, extra] = value.split('/')
+    const [type, subtype, extra] = String.split(value, '/')
     return (
       type !== undefined &&
       subtype !== undefined &&
       extra === undefined &&
-      token.test(type) &&
-      token.test(subtype) &&
-      (!type.includes('*') || type === '*') &&
-      (!subtype.includes('*') || subtype === '*') &&
+      matches(token, type) &&
+      matches(token, subtype) &&
+      (!String.includes('*')(type) || type === '*') &&
+      (!String.includes('*')(subtype) || subtype === '*') &&
       (type !== '*' || subtype === '*') &&
       (!offered || (type !== '*' && subtype !== '*'))
     )
   }
   if (value === '*') return !offered
-  return kind === 'language' ? language.test(value) : token.test(value) && !value.includes('*')
+  return kind === 'language' ? matches(language, value) : matches(token, value) && !String.includes('*')(value)
+}
+
+interface Parameters {
+  readonly values: Readonly<Record<string, string>>
+  readonly quality: Option.Option<number>
+}
+
+// Preserve the public dictionary shape without exposing inherited keys.
+const parameterDictionary = <A extends Readonly<Record<string, string>>>(values: A): A => ({
+  __proto__: null,
+  ...values,
+})
+
+const parseParameter = (
+  kind: Kind,
+  offered: boolean,
+  parameters: Parameters,
+  part: string,
+): Result.Result<Parameters, ParseError> => {
+  const equals = String.indexOf('=')(part)
+  if (Option.isNone(equals) || equals.value < 1) return invalid(kind, 'Invalid parameter')
+  const name = pipe(part, String.slice(0, equals.value), String.trim, String.toLowerCase)
+  const raw = pipe(part, String.slice(equals.value + 1), String.trim)
+  if (!matches(token, name)) return invalid(kind, 'Invalid parameter')
+  if (name === 'q') {
+    if (offered || Option.isSome(parameters.quality) || !matches(quality, raw)) return invalid(kind, 'Invalid quality')
+    return Result.succeed({ ...parameters, quality: Number.parse(raw) })
+  }
+  // Accept extensions after q are deliberately rejected rather than silently ignored.
+  if (kind !== 'mediaType' || Option.isSome(parameters.quality) || Record.has(parameters.values, name)) {
+    return invalid(kind, 'Unsupported or duplicate parameter')
+  }
+  const decoded = parameterValue(raw)
+  if (decoded === undefined) return invalid(kind, 'Invalid parameter value')
+  return Result.succeed({
+    ...parameters,
+    values: Record.set(parameters.values, name, name === 'charset' ? String.toLowerCase(decoded) : decoded),
+  })
 }
 
 const parsePreference = (kind: Kind, input: string, offered: boolean): Result.Result<Preference, ParseError> => {
   const parts = split(input, ';')
-  const value = parts?.[0]?.toLowerCase()
-  if (parts === undefined || parts.length > 129 || value === undefined || !validValue(kind, value, offered)) {
+  if (parts === undefined || parts.length > 129) return invalid(kind, 'Invalid preference value')
+  const [rawValue, ...rawParameters] = parts
+  const value = String.toLowerCase(rawValue ?? '')
+  if (!validValue(kind, value, offered)) {
     return invalid(kind, 'Invalid preference value')
   }
-  const parameters: Record<string, string> = Object.create(null)
-  let q = 1
-  let seenQuality = false
-  for (const part of parts.slice(1)) {
-    const equals = part.indexOf('=')
-    const name = part.slice(0, equals).trim().toLowerCase()
-    const raw = part.slice(equals + 1).trim()
-    if (equals < 1 || !token.test(name)) return invalid(kind, 'Invalid parameter')
-    if (name === 'q') {
-      if (offered || seenQuality || !quality.test(raw)) return invalid(kind, 'Invalid quality')
-      seenQuality = true
-      q = Number(raw)
-    } else {
-      // Accept extensions after q are deliberately rejected rather than silently ignored.
-      if (kind !== 'mediaType' || seenQuality || Object.hasOwn(parameters, name)) {
-        return invalid(kind, 'Unsupported or duplicate parameter')
-      }
-      const decoded = parameterValue(raw)
-      if (decoded === undefined) return invalid(kind, 'Invalid parameter value')
-      parameters[name] = name === 'charset' ? decoded.toLowerCase() : decoded
-    }
-  }
-  return Result.succeed({ value, parameters, quality: q })
+  const initial: Result.Result<Parameters, ParseError> = Result.succeed({
+    values: Record.empty(),
+    quality: Option.none(),
+  })
+  return pipe(
+    rawParameters,
+    Array.reduce(initial, (state, part) =>
+      Result.flatMap(state, (parameters) => parseParameter(kind, offered, parameters, part)),
+    ),
+    Result.map(({ values, quality }) => ({
+      value,
+      parameters: parameterDictionary(values),
+      quality: Option.getOrElse(quality, () => 1),
+    })),
+  )
 }
 
 /**
@@ -131,34 +148,49 @@ const parsePreference = (kind: Kind, input: string, offered: boolean): Result.Re
  */
 export const parse = (kind: Kind, header: string | null): Result.Result<Parsed, ParseError> => {
   if (header === null) return Result.succeed({ kind, missing: true, preferences: [] })
-  if (header.length > 8192 || /[^\x20-\x7e\t]/.test(header)) return invalid(kind, 'Invalid or oversized header')
-  if (header.trim() === '') return Result.succeed({ kind, missing: false, preferences: [] })
+  if (!isBoundedAscii(header)) return invalid(kind, 'Invalid or oversized header')
+  if (String.trim(header) === '') return Result.succeed({ kind, missing: false, preferences: [] })
   const members = split(header, ',')
   if (members === undefined || members.length > 128) return invalid(kind, 'Invalid or excessive preference list')
-  const preferences: Preference[] = []
-  for (const member of members) {
-    const parsed = parsePreference(kind, member, false)
-    if (Result.isFailure(parsed)) return Result.fail(parsed.failure)
-    preferences.push(parsed.success)
-  }
-  return Result.succeed({ kind, missing: false, preferences })
+  return pipe(
+    members,
+    Iterable.map((member) => parsePreference(kind, member, false)),
+    Result.all,
+    Result.map((preferences) => ({ kind, missing: false, preferences })),
+  )
 }
 
 const specificity = (kind: Kind, range: Preference, offer: Preference): number => {
   if (kind === 'mediaType') {
-    const [type, subtype] = range.value.split('/')
-    const [offeredType, offeredSubtype] = offer.value.split('/')
+    const [type, subtype] = String.split(range.value, '/')
+    const [offeredType, offeredSubtype] = String.split(offer.value, '/')
     if (type !== '*' && type !== offeredType) return -1
     if (subtype !== '*' && subtype !== offeredSubtype) return -1
-    const parameters = Object.entries(range.parameters)
-    if (!parameters.every(([key, value]) => offer.parameters[key] === value)) return -1
+    const parameters = Record.toEntries(range.parameters)
+    if (!Array.every(parameters, ([key, value]) => offer.parameters[key] === value)) return -1
     return (type === '*' ? 0 : subtype === '*' ? 1 : 2) * 1000 + parameters.length
   }
   if (range.value === '*') return 0
   if (kind === 'language') {
-    return offer.value === range.value || offer.value.startsWith(`${range.value}-`) ? range.value.split('-').length : -1
+    return offer.value === range.value || String.startsWith(`${range.value}-`)(offer.value)
+      ? String.split(range.value, '-').length
+      : -1
   }
   return range.value === offer.value ? 1 : -1
+}
+
+const effectiveQuality = (parsed: Parsed, offer: Preference): number => {
+  if (parsed.missing) return 1
+  const { kind } = parsed
+  const best = Array.reduce(parsed.preferences, { rank: -1, quality: 0 }, (best, range) => {
+    const rank = specificity(kind, range, offer)
+    if (rank < 0 || rank < best.rank) return best
+    return { rank, quality: rank === best.rank ? Number.min(best.quality, range.quality) : range.quality }
+  })
+  if (kind === 'encoding' && offer.value === 'identity' && best.rank < 1) {
+    return best.rank === 0 && best.quality === 0 ? 0 : 1
+  }
+  return best.quality
 }
 
 /**
@@ -177,36 +209,28 @@ export const negotiate = (
   kind: Kind,
   header: string | null,
   supports: ReadonlyArray<string>,
-): Result.Result<Option.Option<string>, ParseError> => {
-  const parsed = parse(kind, header)
-  if (Result.isFailure(parsed)) return Result.fail(parsed.failure)
-  if (supports.length > 128) return invalid(kind, 'Too many offers')
-  let selected: Option.Option<string> = Option.none()
-  let best = 0
-  for (const supported of supports) {
-    if (supported.length > 8192 || /[^\x20-\x7e\t]/.test(supported)) return invalid(kind, 'Invalid or oversized offer')
-    const offered = parsePreference(kind, supported, true)
-    if (Result.isFailure(offered)) return Result.fail(offered.failure)
-    let score = -1
-    let q = parsed.success.missing ? 1 : 0
-    for (const range of parsed.success.preferences) {
-      const rank = specificity(kind, range, offered.success)
-      if (rank < 0) continue
-      if (rank > score) {
-        score = rank
-        q = range.quality
-      } else if (rank === score) q = Math.min(q, range.quality)
-    }
-    if (kind === 'encoding' && offered.success.value === 'identity' && score < 1) {
-      q = score === 0 && q === 0 ? 0 : 1
-    }
-    if (q > best) {
-      best = q
-      selected = Option.some(supported)
-    }
-  }
-  return Result.succeed(selected)
-}
+): Result.Result<Option.Option<string>, ParseError> =>
+  Result.flatMap(parse(kind, header), (parsed) => {
+    if (supports.length > 128) return invalid(kind, 'Too many offers')
+    return pipe(
+      supports,
+      Iterable.map((supported) =>
+        isBoundedAscii(supported)
+          ? Result.map(parsePreference(kind, supported, true), (offer) => ({
+              supported,
+              quality: effectiveQuality(parsed, offer),
+            }))
+          : invalid(kind, 'Invalid or oversized offer'),
+      ),
+      Result.all,
+      Result.map(
+        (offers) =>
+          Array.reduce(offers, { selected: Option.none<string>(), quality: 0 }, (best, { supported, quality }) =>
+            quality > best.quality ? { selected: Option.some(supported), quality } : best,
+          ).selected,
+      ),
+    )
+  })
 
 /** Negotiate directly from Web Headers, without middleware. */
 export const negotiateHeaders = (kind: Kind, headers: Headers, supports: ReadonlyArray<string>) =>

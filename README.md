@@ -79,8 +79,9 @@ A strong ETag must describe the final response bytes.
 
 ### Cache-Control
 
-`CacheControl.parse(value)` returns a `Success` with typed directives or an `Invalid` reason.
-`CacheControl.format(directives)` validates application configuration and serializes a header, throwing for invalid configuration.
+`CacheControl.parse(value)` returns `Result<Directives, ParseError>`.
+Use `Result.match` to handle typed directives or the error's `reason`.
+`CacheControl.format(directives)` validates application configuration and serializes a header, throwing `CacheControl.ConfigError` for invalid configuration.
 `CacheControl.middleware(directives)` applies that header to successful responses.
 
 Supported directives include visibility, freshness, revalidation, immutable, no-transform, only-if-cached, min-fresh, and max-stale.

@@ -1,4 +1,4 @@
-import { Clock, Deferred, Effect, Fiber, Stream } from 'effect'
+import { Clock, Deferred, Effect, Exit, Fiber, Result, Stream } from 'effect'
 import * as HttpEffect from 'effect/http/HttpEffect'
 import * as HttpServerRequest from 'effect/http/HttpServerRequest'
 import * as HttpServerResponse from 'effect/http/HttpServerResponse'
@@ -26,6 +26,32 @@ const fixture = async (
 }
 
 describe('ResponseCache', () => {
+  it.each([
+    { capacity: 0 },
+    { capacity: 1.5 },
+    { maxBodyBytes: -1 },
+    { maxBodyBytes: Infinity },
+    { ttlMilliseconds: 0 },
+    { ttlMilliseconds: NaN },
+    { vary: ['authorization'] },
+    { vary: ['bad,header'] },
+  ])('reports invalid configuration through its generated error %j', async (overrides) => {
+    const exit = await Effect.runPromiseExit(ResponseCache.make({ ...options, ...overrides }))
+    const error = Result.getOrThrow(Exit.findDefect(exit))
+    expect(error).toBeInstanceOf(ResponseCache.ConfigError)
+  })
+  it('normalizes and deduplicates declared variants before emitting Vary and keying responses', async () => {
+    const { handler } = await fixture(undefined, { vary: ['X-Theme', 'Accept-Language', 'accept-language'] })
+    const request = (theme: string) =>
+      new Request('https://example.com/', {
+        headers: { 'accept-language': 'ja', 'x-theme': theme },
+      })
+    const first = await handler(request('dark'))
+    expect(first.headers.get('vary')).toBe('accept-language, x-theme')
+    expect(await first.text()).toBe('1')
+    expect(await (await handler(request('light'))).text()).toBe('2')
+    expect(await (await handler(request('dark'))).text()).toBe('1')
+  })
   it('reuses public GET responses and manually invalidates', async () => {
     const { handler, cache } = await fixture()
     const request = () => new Request('https://example.com/')
@@ -214,6 +240,34 @@ describe('ResponseCache', () => {
       expect(await (await handler(new Request('https://example.com/'))).text()).toBe('2')
     },
   )
+  it.each([
+    [1999.999, '1'],
+    [4503599627370401000, '4503599627370401'],
+  ] as const)('emits integer Age for elapsed milliseconds %s', async (elapsed, expected) => {
+    let now = 0
+    const clock: Clock.Clock = {
+      currentTimeMillisUnsafe: () => now,
+      currentTimeMillis: Effect.sync(() => now),
+      currentTimeNanosUnsafe: () => BigInt(Math.trunc(now)) * 1_000_000n,
+      currentTimeNanos: Effect.sync(() => BigInt(Math.trunc(now)) * 1_000_000n),
+      monotonicTimeNanosUnsafe: () => BigInt(Math.trunc(now)) * 1_000_000n,
+      monotonicTimeNanos: Effect.sync(() => BigInt(Math.trunc(now)) * 1_000_000n),
+      sleep: () => Effect.void,
+    }
+    const cache = await Effect.runPromise(
+      ResponseCache.make({ ...options, ttlMilliseconds: 1e20 }).pipe(Effect.provideService(Clock.Clock, clock)),
+    )
+    const handler = HttpEffect.toWebHandler(
+      cache
+        .middleware(Effect.succeed(HttpServerResponse.text('cached')))
+        .pipe(Effect.provideService(Clock.Clock, clock)),
+    )
+    await handler(new Request('https://example.com/'))
+    now = elapsed
+    const hit = await handler(new Request('https://example.com/'))
+    expect(await hit.text()).toBe('cached')
+    expect(hit.headers.get('age')).toBe(expected)
+  })
   it('uses injected Clock for Age and max-age expiry', async () => {
     let now = 0
     const clock: Clock.Clock = {

@@ -53,6 +53,9 @@ Prefer stricter, documented security semantics to byte-for-byte Hono compatibili
 
 - Keep Effect as a peer dependency and development dependency.
 - Add no runtime dependencies without a concrete benefit that cannot reasonably be supplied by Effect or Web standards.
+- Compose policy logic with Effect's collection, string, numeric, parsing, and HTTP APIs instead of native method chains or mutable loop accumulators.
+- Use `Result.Result` for parsing outcomes, `Data.TaggedError` for custom errors, and Effect constructors for tagged values. Do not handwrite result unions or `_tag` fields.
+- Keep shared mutable state in `Ref`. Keep pure parsers and decisions synchronous with `Result` or `Option`, rather than wrapping them in an unnecessary Effect.
 - Preserve error and environment types through middleware.
 - Keep external parsing failures explicit and never turn malformed input into a permissive match.
 - Do not buffer arbitrary streams to hash or cache them.

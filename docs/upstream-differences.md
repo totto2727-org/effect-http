@@ -27,6 +27,10 @@ The upstream license is retained in [NOTICE](../NOTICE).
 This package supplies standalone HTTP policy logic and thin Effect adapters.
 It does not provide Hono API compatibility or a second HTTP framework.
 Effect remains the only runtime peer dependency.
+Policy composition uses Effect's collection and string APIs, `Result` and `Option`, and `Ref` for cache invalidation state.
+`CacheControl.parse` returns `Result<Directives, ParseError>` rather than a package-specific result union.
+Custom errors use `Data.TaggedError`, and ETag values use Effect-generated tagged constructors.
+These implementation choices preserve the documented HTTP policies rather than reproduce Hono's internal control flow.
 Hono is not installed or bundled.
 
 | Area                     | Hono baseline                                             | Retained difference and operational impact                                                                                                                                                                                                                                                                                                                                                                          |

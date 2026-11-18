@@ -1,9 +1,27 @@
-import { Cache, Clock, Effect, Option } from 'effect'
+import {
+  Array,
+  BigDecimal,
+  Bytes,
+  Cache,
+  Clock,
+  Data,
+  DateTime,
+  Effect,
+  HashSet,
+  Number,
+  Option,
+  Ref,
+  Result,
+  Schema,
+  String,
+  pipe,
+} from 'effect'
 import * as Cookies from 'effect/http/Cookies'
 import * as HttpServerRequest from 'effect/http/HttpServerRequest'
 import * as HttpServerResponse from 'effect/http/HttpServerResponse'
 
 import * as CacheControl from './CacheControl.ts'
+import * as HttpDate from './internal/HttpDate.ts'
 
 export interface Options {
   readonly capacity: number
@@ -20,64 +38,136 @@ interface Entry {
   readonly initialAgeMilliseconds: number
 }
 
+export class ConfigError extends Data.TaggedError('ResponseCacheConfigError')<{
+  readonly message: string
+}> {}
+
+const isNatural = Schema.is(Schema.Natural)
+const isPositiveInteger = Schema.is(Schema.Int.check(Schema.isGreaterThan(0)))
+const isPositiveLifetime = Schema.is(Schema.Finite.check(Schema.isGreaterThan(0)))
+const isAgeSeconds = Schema.is(Schema.Natural.check(Schema.isLessThanOrEqualTo(9_007_199_254_740_991 / 1000)))
+const encodeKey = Schema.encodeSync(Schema.fromJsonString(Schema.Array(Schema.Json)))
+const invalidHeaderBytes = String.match(/[^\t\x20-\x7e]/)
+const varyToken = String.match(/^[!#$%&'*+.^_`|~\w-]+$/)
+
 const copy = (response: HttpServerResponse.HttpServerResponse): HttpServerResponse.HttpServerResponse =>
   response.body._tag === 'Uint8Array'
-    ? HttpServerResponse.uint8Array(response.body.body.slice(), { status: response.status, headers: response.headers })
+    ? HttpServerResponse.uint8Array(Bytes.concat([response.body.body]), {
+        status: response.status,
+        headers: response.headers,
+      })
     : HttpServerResponse.empty({ status: response.status, headers: response.headers })
 
 const blockedRequest = (request: HttpServerRequest.HttpServerRequest): boolean => {
-  const h = request.headers
-  if (
+  const headers = request.headers
+  // All supported request cache directives require revalidation, which this route cache does not implement.
+  return (
     request.method !== 'GET' ||
-    [
-      'authorization',
-      'cookie',
-      'range',
-      'if-range',
-      'if-match',
-      'if-none-match',
-      'if-modified-since',
-      'if-unmodified-since',
-      'pragma',
-    ].some((key) => h[key] !== undefined)
+    Array.some(
+      [
+        'authorization',
+        'cookie',
+        'range',
+        'if-range',
+        'if-match',
+        'if-none-match',
+        'if-modified-since',
+        'if-unmodified-since',
+        'pragma',
+        'cache-control',
+      ],
+      (key) => headers[key] !== undefined,
+    )
   )
-    return true
-  if (h['cache-control'] !== undefined) {
-    const parsed = CacheControl.parse(h['cache-control'])
-    if (parsed._tag === 'Invalid') return true
-    // Request freshness constraints need revalidation, which this route cache deliberately does not implement.
-    if (Object.keys(parsed.directives).length > 0) return true
-  }
-  return false
 }
+
+const storableResponse = (
+  response: HttpServerResponse.HttpServerResponse,
+  maxBodyBytes: number,
+  vary: ReadonlyArray<string>,
+): boolean => {
+  const { body, headers } = response
+  if (
+    response.status !== 200 ||
+    !Cookies.isEmpty(response.cookies) ||
+    headers['set-cookie'] !== undefined ||
+    headers['expires'] !== undefined ||
+    (body._tag !== 'Empty' && body._tag !== 'Uint8Array') ||
+    (body._tag === 'Uint8Array' && body.body.length > maxBodyBytes) ||
+    Option.fromNullishOr(headers['content-type']).pipe(
+      Option.map(String.toLowerCase),
+      Option.exists(String.startsWith('text/event-stream')),
+    )
+  )
+    return false
+  const varyHeader = headers['vary']
+  if (varyHeader === undefined) return true
+  if (String.length(varyHeader) > 8192 || Option.isSome(invalidHeaderBytes(varyHeader))) return false
+  const declared = pipe(
+    varyHeader,
+    String.split(','),
+    Array.map((value) => String.toLowerCase(String.trim(value))),
+  )
+  return declared.length <= 64 && Array.every(declared, (name) => name !== '*' && Array.contains(vary, name))
+}
+
+/** Derive freshness only after every origin policy, Age and Date value has been validated. */
+const freshness = (
+  headers: HttpServerResponse.HttpServerResponse['headers'],
+  ttlMilliseconds: number,
+  requestedAt: number,
+  storedAt: number,
+) =>
+  Option.gen(function* () {
+    const control = headers['cache-control']
+    const directives = control === undefined ? {} : yield* Result.getSuccess(CacheControl.parse(control))
+    if (directives.private || directives.noStore || directives.noCache) return yield* Option.none()
+    const seconds = directives.sMaxAge ?? directives.maxAge
+    const lifetime = seconds === undefined ? ttlMilliseconds : Number.min(ttlMilliseconds, seconds * 1000)
+    const age = headers['age']
+    if (age !== undefined && (String.length(age) > 16 || Option.isNone(String.match(/^\d+$/)(age)))) {
+      return yield* Option.none()
+    }
+    const ageSeconds = age === undefined ? 0 : yield* Number.parse(age).pipe(Option.filter(isAgeSeconds))
+    const originDate = headers['date']
+    const apparentAge =
+      originDate === undefined ? 0 : Number.max(0, storedAt - DateTime.toEpochMillis(yield* HttpDate.parse(originDate)))
+    // Corrected initial age retains subsecond apparent age and includes the origin response delay.
+    const initialAgeMilliseconds = Number.max(ageSeconds * 1000 + Number.max(0, storedAt - requestedAt), apparentAge)
+    const remaining = lifetime - initialAgeMilliseconds
+    return remaining <= 0 ? yield* Option.none() : { expiresAt: storedAt + remaining, initialAgeMilliseconds }
+  })
 
 /** Explicit public GET route cache, not a proxy cache. Call invalidateAll after writes, including writes outside this route. */
 export const make = (options: Options) =>
   Effect.gen(function* () {
     if (
       options.publicRoute !== true ||
-      !Number.isSafeInteger(options.capacity) ||
-      options.capacity <= 0 ||
-      !Number.isSafeInteger(options.maxBodyBytes) ||
-      options.maxBodyBytes < 0 ||
-      !Number.isFinite(options.ttlMilliseconds) ||
-      options.ttlMilliseconds <= 0
+      !isPositiveInteger(options.capacity) ||
+      !isNatural(options.maxBodyBytes) ||
+      !isPositiveLifetime(options.ttlMilliseconds)
     )
-      throw new TypeError('Invalid route cache configuration')
-    const vary = [...new Set(options.vary.map((name) => name.toLowerCase()))].sort()
-    if (vary.some((name) => !/^[!#$%&'*+.^_`|~\w-]+$/.test(name) || ['authorization', 'cookie'].includes(name)))
-      throw new TypeError('Invalid Vary declaration')
+      throw new ConfigError({ message: 'Invalid route cache configuration' })
+    const vary = pipe(
+      options.vary,
+      Array.map(String.toLowerCase),
+      HashSet.fromIterable,
+      Array.fromIterable,
+      Array.sort(String.Order),
+    )
+    if (
+      Array.some(vary, (name) => Option.isNone(varyToken(name)) || Array.contains(['authorization', 'cookie'], name))
+    ) {
+      throw new ConfigError({ message: 'Invalid Vary declaration' })
+    }
     const storage = yield* Cache.make<string, Entry>({
       capacity: options.capacity,
       timeToLive: options.ttlMilliseconds,
-      lookup: () => Effect.die('Route cache uses explicit insertion only'),
+      lookup: () => Effect.die(new ConfigError({ message: 'Route cache uses explicit insertion only' })),
     })
-    let generation = 0
+    const generation = yield* Ref.make(0)
     const invalidateAll = Effect.uninterruptible(
-      Effect.gen(function* () {
-        generation++
-        yield* Cache.invalidateAll(storage)
-      }),
+      Effect.andThen(Ref.update(generation, Number.increment), Cache.invalidateAll(storage)),
     )
     const middleware = <E, R>(
       handler: Effect.Effect<HttpServerResponse.HttpServerResponse, E, R>,
@@ -87,73 +177,34 @@ export const make = (options: Options) =>
         if (blockedRequest(request)) return yield* handler
         const url = HttpServerRequest.toURL(request)
         if (Option.isNone(url)) return yield* handler
-        const currentGeneration = generation
-        const key = JSON.stringify([
+        const currentGeneration = yield* Ref.get(generation)
+        const key = encodeKey([
           currentGeneration,
           request.method,
           request.originalUrl,
           url.value.href,
           request.headers['host'] ?? '',
-          vary.map((name) => [name, request.headers[name] ?? null]),
+          Array.map(vary, (name) => [name, request.headers[name] ?? null]),
         ])
         const now = yield* Clock.currentTimeMillis
         const cached = yield* Cache.getOption(storage, key)
-        if (Option.isSome(cached) && generation === currentGeneration && now < cached.value.expiresAt) {
-          return HttpServerResponse.setHeader(
-            copy(cached.value.response),
-            'age',
-            String(Math.floor((Math.max(0, now - cached.value.storedAt) + cached.value.initialAgeMilliseconds) / 1000)),
-          )
+        if (
+          Option.isSome(cached) &&
+          (yield* Ref.get(generation)) === currentGeneration &&
+          now < cached.value.expiresAt
+        ) {
+          const age = Number.max(0, now - cached.value.storedAt) + cached.value.initialAgeMilliseconds
+          const ageSeconds = pipe(age / 1000, BigDecimal.fromNumberUnsafe, BigDecimal.floor, BigDecimal.toNumberUnsafe)
+          return HttpServerResponse.setHeader(copy(cached.value.response), 'age', `${ageSeconds}`)
         }
         const response = yield* handler
-        const body = response.body
-        if (
-          response.status !== 200 ||
-          !Cookies.isEmpty(response.cookies) ||
-          response.headers['set-cookie'] !== undefined ||
-          response.headers['expires'] !== undefined ||
-          (body._tag !== 'Empty' && body._tag !== 'Uint8Array') ||
-          (body._tag === 'Uint8Array' && body.body.length > options.maxBodyBytes) ||
-          response.headers['content-type']?.toLowerCase().startsWith('text/event-stream')
-        )
-          return response
-        const varyHeader = response.headers['vary']
-        if (varyHeader !== undefined && (varyHeader.length > 8192 || /[^\t\x20-\x7e]/.test(varyHeader))) return response
-        const declared = varyHeader?.split(',').map((value) => value.trim().toLowerCase()) ?? []
-        if (declared.length > 64 || declared.some((name) => name === '*' || !vary.includes(name))) return response
-        const control = response.headers['cache-control']
-        let lifetime = options.ttlMilliseconds
-        if (control !== undefined) {
-          const parsed = CacheControl.parse(control)
-          if (
-            parsed._tag === 'Invalid' ||
-            parsed.directives.private ||
-            parsed.directives.noStore ||
-            parsed.directives.noCache
-          )
-            return response
-          const seconds = parsed.directives.sMaxAge ?? parsed.directives.maxAge
-          if (seconds !== undefined) lifetime = Math.min(lifetime, seconds * 1000)
-        }
-        const ageHeader = response.headers['age']
-        if (ageHeader !== undefined && (ageHeader.length > 16 || !/^\d+$/.test(ageHeader))) return response
+        if (!storableResponse(response, options.maxBodyBytes, vary)) return response
         const storedAt = yield* Clock.currentTimeMillis
-        const ageSeconds = ageHeader === undefined ? 0 : Number(ageHeader)
-        if (!Number.isSafeInteger(ageSeconds) || ageSeconds > Number.MAX_SAFE_INTEGER / 1000) return response
-        // Corrected initial age retains subsecond apparent age and includes the origin response delay.
-        let initialAgeMilliseconds = ageSeconds * 1000 + Math.max(0, storedAt - now)
-        if (response.headers['date'] !== undefined) {
-          if (response.headers['date'].length !== 29) return response
-          const date = Date.parse(response.headers['date'])
-          if (!Number.isFinite(date) || new Date(date).toUTCString() !== response.headers['date']) return response
-          initialAgeMilliseconds = Math.max(initialAgeMilliseconds, Math.max(0, storedAt - date))
-        }
-        lifetime -= initialAgeMilliseconds
-        if (lifetime <= 0) return response
-        const expiresAt = storedAt + lifetime
-        if (generation !== currentGeneration) return response
-        const output = vary.length === 0 ? response : HttpServerResponse.setHeader(response, 'vary', vary.join(', '))
-        yield* Cache.set(storage, key, { response: copy(output), storedAt, expiresAt, initialAgeMilliseconds })
+        const fresh = freshness(response.headers, options.ttlMilliseconds, now, storedAt)
+        if (Option.isNone(fresh) || (yield* Ref.get(generation)) !== currentGeneration) return response
+        const output =
+          vary.length === 0 ? response : HttpServerResponse.setHeader(response, 'vary', Array.join(vary, ', '))
+        yield* Cache.set(storage, key, { response: copy(output), storedAt, ...fresh.value })
         return output
       })
     return { middleware, invalidateAll }

@@ -1,4 +1,4 @@
-import { Effect, Option, Result } from 'effect'
+import { Array as Arr, Effect, Option, Result } from 'effect'
 import * as HttpEffect from 'effect/http/HttpEffect'
 import * as HttpServerRequest from 'effect/http/HttpServerRequest'
 import * as HttpServerResponse from 'effect/http/HttpServerResponse'
@@ -161,6 +161,40 @@ describe('Accepts strict parsing', () => {
         preferences: [{ value: 'text/html', parameters: { charset: 'utf-8' }, quality: 0.125 }],
       }),
     )
+  })
+
+  it.each([
+    ['text/html;q=2', Arr.replicate('text/html', 129), 'Invalid quality'],
+    ['text/html;q=2,text/html;p="unterminated', [], 'Invalid or excessive preference list'],
+    ['text/html;q=2,text/html;bad', [], 'Invalid quality'],
+    ['text/html;bad;q=2', [], 'Invalid parameter'],
+    ['text/html;q=1;p="a"b"c"', [], 'Unsupported or duplicate parameter'],
+    ['text/html', ['text/html', 'text/html;q=1', '\n'], 'Invalid quality'],
+    ['text/html', ['text/html', '\n', 'text/html;q=1'], 'Invalid or oversized offer'],
+  ] satisfies [string, ReadonlyArray<string>, string][])(
+    'keeps the first failure for %s and %j',
+    (header, offers, reason) => {
+      const result = Accepts.negotiate('mediaType', header, offers)
+      expect(Result.isFailure(result) && result.failure).toMatchObject({
+        _tag: 'AcceptsParseError',
+        kind: 'mediaType',
+        reason,
+      })
+      expect(Result.isFailure(result) && result.failure).toBeInstanceOf(Accepts.ParseError)
+    },
+  )
+
+  it('keeps escaped quoted data and accepts prototype-named parameters as ordinary keys', () => {
+    const offer = String.raw`TEXT/HTML;profile="a,;\\\"b";__proto__=x;constructor=y`
+    expect(choose('mediaType', `${offer};q=1.`, ['text/html', offer])).toBe(offer)
+    const parsed = Accepts.parse('mediaType', offer)
+    const parameters = Result.isSuccess(parsed) && parsed.success.preferences[0]?.parameters
+    expect(parameters).toEqual({
+      profile: 'a,;\\"b',
+      ['__proto__']: 'x',
+      constructor: 'y',
+    })
+    expect(Object.getPrototypeOf(parameters)).toBeNull()
   })
 })
 

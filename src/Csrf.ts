@@ -1,5 +1,5 @@
-import { Effect } from 'effect'
-import { HttpMiddleware, HttpServerRequest, HttpServerResponse } from 'effect/http'
+import { Array, Data, Effect, HashSet, Option, pipe, Record, Result, String } from 'effect'
+import { HttpMiddleware, HttpServerRequest, HttpServerResponse, Url } from 'effect/http'
 
 export interface Config {
   /** Additional exact HTTP(S) origins. Paths, credentials, query strings, and fragments are rejected. */
@@ -26,57 +26,66 @@ export type Decision =
         | 'missing-proof'
     }
 
-export class ConfigError extends Error {
-  readonly _tag = 'ConfigError'
-}
-
-const parseUrl = (value: string): URL | undefined => {
-  for (const character of value) {
-    if (character.charCodeAt(0) <= 32 || character.charCodeAt(0) === 127 || character === '\\') return undefined
-  }
-  try {
-    const url = new URL(value)
-    return (url.protocol === 'http:' || url.protocol === 'https:') && !url.username && !url.password ? url : undefined
-  } catch {
-    return undefined
+export class ConfigError extends Data.TaggedError('ConfigError')<{
+  readonly message?: string
+  readonly cause?: unknown
+}> {
+  constructor(message?: string, options?: ErrorOptions) {
+    super(message === undefined ? (options ?? {}) : { ...options, message })
   }
 }
 
-const parseOrigin = (value: string): string | undefined => {
-  const url = parseUrl(value)
-  return url && url.pathname === '/' && !url.search && !url.hash && /^https?:\/\/[^/@]+\/?$/iu.test(value)
-    ? url.origin
-    : undefined
-}
+// eslint-disable-next-line no-control-regex -- Reject ASCII controls before URL normalization can strip them.
+const forbiddenUrlCharacters = String.match(/[\u0000-\u0020\u007f\\]/u)
+const absoluteHttpUrl = String.match(/^https?:\/\//iu)
+const originSyntax = String.match(/^https?:\/\/[^/@]+\/?$/iu)
 
-const origins = (config: Config): ReadonlySet<string> =>
-  new Set(
-    (config.allowedOrigins ?? []).map((value) => {
-      const origin = parseOrigin(value)
-      if (origin === undefined) throw new ConfigError(`Invalid allowed origin: ${value}`)
-      return origin
-    }),
+const parseUrl = (value: string): Option.Option<URL> =>
+  Option.isSome(forbiddenUrlCharacters(value))
+    ? Option.none()
+    : pipe(
+        Url.fromString(value),
+        Result.getSuccess,
+        Option.filter(
+          (url) => (url.protocol === 'http:' || url.protocol === 'https:') && !url.username && !url.password,
+        ),
+      )
+
+const parseOrigin = (value: string): Option.Option<string> =>
+  pipe(
+    parseUrl(value),
+    Option.filter((url) => url.pathname === '/' && !url.search && !url.hash && Option.isSome(originSyntax(value))),
+    Option.map((url) => url.origin),
   )
 
-const evaluate = (request: Request, allowedOrigins: ReadonlySet<string>): Decision => {
-  if (['GET', 'HEAD', 'OPTIONS'].includes(request.method.toUpperCase())) return { allowed: true }
-  const target = parseUrl(request.url)?.origin
-  if (target === undefined) return { allowed: false, reason: 'invalid-target' }
-  const origin = request.origin === undefined ? undefined : parseOrigin(request.origin)
-  if (request.origin !== undefined && origin === undefined) return { allowed: false, reason: 'invalid-origin' }
-  if (origin !== undefined && origin !== target && !allowedOrigins.has(origin)) {
+const origins = (config: Config): HashSet.HashSet<string> =>
+  pipe(
+    config.allowedOrigins ?? [],
+    Array.map((value) =>
+      Option.getOrThrowWith(parseOrigin(value), () => new ConfigError(`Invalid allowed origin: ${value}`)),
+    ),
+    HashSet.fromIterable,
+  )
+
+const evaluate = (request: Request, allowedOrigins: HashSet.HashSet<string>): Decision => {
+  if (Array.contains(['GET', 'HEAD', 'OPTIONS'], String.toUpperCase(request.method))) return { allowed: true }
+  const target = parseUrl(request.url)
+  if (Option.isNone(target)) return { allowed: false, reason: 'invalid-target' }
+  const origin = request.origin === undefined ? Option.none<string>() : parseOrigin(request.origin)
+  if (request.origin !== undefined && Option.isNone(origin)) return { allowed: false, reason: 'invalid-origin' }
+  const sameOrigin = Option.contains(origin, target.value.origin)
+  if (Option.isSome(origin) && !sameOrigin && !HashSet.has(allowedOrigins, origin.value)) {
     return { allowed: false, reason: 'untrusted-origin' }
   }
   const site = request.secFetchSite
   if (
     site !== undefined &&
-    (!['same-origin', 'same-site', 'cross-site', 'none'].includes(site) ||
-      site === 'none' ||
-      (site === 'same-origin' && origin !== undefined && origin !== target) ||
-      (site === 'cross-site' && origin === target))
+    (!Array.contains(['same-origin', 'same-site', 'cross-site'], site) ||
+      (site === 'same-origin' && Option.isSome(origin) && !sameOrigin) ||
+      (site === 'cross-site' && sameOrigin))
   )
     return { allowed: false, reason: 'contradictory-metadata' }
-  return origin !== undefined || site === 'same-origin'
+  return Option.isSome(origin) || site === 'same-origin'
     ? { allowed: true }
     : { allowed: false, reason: 'missing-proof' }
 }
@@ -85,18 +94,19 @@ const evaluate = (request: Request, allowedOrigins: ReadonlySet<string>): Decisi
 export const decide = (request: Request, config: Config = {}): Decision => evaluate(request, origins(config))
 
 const vary = (response: HttpServerResponse.HttpServerResponse): HttpServerResponse.HttpServerResponse => {
-  const existing = response.headers['vary']
-  if (existing?.split(',').some((name) => name.trim() === '*')) return response
-  const names = new Map(
-    (existing ?? '')
-      .split(',')
-      .map((name) => name.trim())
-      .filter(Boolean)
-      .map((name) => [name.toLowerCase(), name]),
+  const existing = pipe(response.headers['vary'] ?? '', String.split(','), Array.map(String.trim))
+  if (Array.contains(existing, '*')) return response
+  const merged = pipe(
+    existing,
+    Array.filter(String.isNonEmpty),
+    Array.appendAll(['Origin', 'Sec-Fetch-Site']),
+    // Prefix keys so numeric field names also retain insertion order.
+    Array.map((name): readonly [string, string] => [`:${String.toLowerCase(name)}`, name]),
+    Record.fromEntries,
+    Record.values,
+    Array.join(', '),
   )
-  names.set('origin', 'Origin')
-  names.set('sec-fetch-site', 'Sec-Fetch-Site')
-  return HttpServerResponse.setHeader(response, 'vary', [...names.values()].join(', '))
+  return HttpServerResponse.setHeader(response, 'vary', merged)
 }
 
 /** Checks every unsafe method, including JSON requests. Does not inspect forwarded headers. */
@@ -108,10 +118,10 @@ export const middleware = (config: Config = {}) => {
       const url =
         request.source instanceof globalThis.Request
           ? request.source.url
-          : /^https?:\/\//iu.test(request.originalUrl)
+          : Option.isSome(absoluteHttpUrl(request.originalUrl))
             ? request.originalUrl
             : request.headers['host']
-              ? `${request.protocol ?? 'http'}://${request.headers['host']}${request.originalUrl.startsWith('/') ? request.originalUrl : `/${request.originalUrl}`}`
+              ? `${request.protocol ?? 'http'}://${request.headers['host']}${String.startsWith('/')(request.originalUrl) ? request.originalUrl : `/${request.originalUrl}`}`
               : ''
       const decision = evaluate(
         {

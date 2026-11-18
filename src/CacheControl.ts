@@ -1,4 +1,4 @@
-import { Effect } from 'effect'
+import { Array, Data, Effect, Number, Option, Record, Result, Schema, String } from 'effect'
 import * as HttpServerResponse from 'effect/http/HttpServerResponse'
 
 export interface Directives {
@@ -17,9 +17,8 @@ export interface Directives {
   readonly maxStale?: number | true
 }
 
-export type ParseResult =
-  | { readonly _tag: 'Success'; readonly directives: Directives }
-  | { readonly _tag: 'Invalid'; readonly reason: string }
+export class ParseError extends Data.TaggedError('CacheControlParseError')<{ readonly reason: string }> {}
+export class ConfigError extends Data.TaggedError('CacheControlConfigError')<{ readonly message: string }> {}
 
 const flags = {
   public: 'public',
@@ -33,54 +32,70 @@ const flags = {
   'only-if-cached': 'onlyIfCached',
 } as const
 const seconds = { 'max-age': 'maxAge', 's-maxage': 'sMaxAge', 'min-fresh': 'minFresh' } as const
-const invalid = (reason: string): ParseResult => ({ _tag: 'Invalid', reason })
+const invalid = (reason: string): Result.Result<never, ParseError> => Result.fail(new ParseError({ reason }))
+const isSafeInteger = Schema.is(Schema.Int)
+const invalidHeaderBytes = String.match(/[^\t\x20-\x7e]/)
+const matchDirective = String.match(/^[\t ]*([!#$%&'*+.^_`|~\w-]+)(?:[\t ]*=[\t ]*(\d+|"\d+"))?[\t ]*$/)
+type FlagKey = (typeof flags)[keyof typeof flags]
+type SecondsKey = (typeof seconds)[keyof typeof seconds]
+type DirectiveEntry =
+  | readonly [FlagKey, true]
+  | readonly [SecondsKey | 'maxStale', number]
+  | readonly ['maxStale', true]
 
-/** Unknown extensions and duplicates are rejected. Input is limited to 8192 code units and 64 directives. */
-export const parse = (input: string): ParseResult => {
-  if (input.length > 8192 || /[^\t\x20-\x7e]/.test(input)) return invalid('Invalid header bytes or length')
-  const parts = input.split(',')
-  if (parts.length > 64) return invalid('Too many directives')
-  const directives: { -readonly [K in keyof Directives]?: Directives[K] } = {}
-  const seen = new Set<string>()
-  if (input.trim() === '') return invalid('Empty Cache-Control')
-  for (const part of parts) {
-    const match = /^[\t ]*([!#$%&'*+.^_`|~\w-]+)(?:[\t ]*=[\t ]*(\d+|"\d+"))?[\t ]*$/.exec(part)
-    if (!match?.[1]) return invalid('Malformed directive')
-    const name = match[1].toLowerCase()
-    const value = match[2]
-    if (seen.has(name)) return invalid(`Duplicate ${name}`)
-    seen.add(name)
-    if (Object.hasOwn(flags, name)) {
-      if (value !== undefined) return invalid(`Unexpected value for ${name}`)
-      const key = flags[name as keyof typeof flags]
-      directives[key] = true
-    } else if (Object.hasOwn(seconds, name) || name === 'max-stale') {
-      if (name === 'max-stale' && value === undefined) directives.maxStale = true
-      else {
-        if (value === undefined) return invalid(`Missing value for ${name}`)
-        const number = Number(value.replaceAll('"', ''))
-        if (!Number.isSafeInteger(number) || number < 0) return invalid('Invalid seconds')
-        if (name === 'max-stale') directives.maxStale = number
-        else directives[seconds[name as keyof typeof seconds]] = number
-      }
-    } else return invalid(`Unsupported directive ${name}`)
+const parseDirective = (name: string, value: string | undefined): Result.Result<DirectiveEntry, ParseError> => {
+  const flag = Record.get<string, FlagKey>(flags, name)
+  if (Option.isSome(flag)) {
+    return value === undefined ? Result.succeed([flag.value, true]) : invalid(`Unexpected value for ${name}`)
   }
-  if (directives.public && directives.private) return invalid('Conflicting visibility')
-  return { _tag: 'Success', directives }
+
+  const duration = Record.get<string, SecondsKey>(seconds, name)
+  if (Option.isNone(duration) && name !== 'max-stale') return invalid(`Unsupported directive ${name}`)
+  if (value === undefined) {
+    return name === 'max-stale' ? Result.succeed(['maxStale', true]) : invalid(`Missing value for ${name}`)
+  }
+
+  const number = Option.getOrUndefined(Number.parse(String.replaceAll('"', '')(value)))
+  if (!isSafeInteger(number) || Number.isLessThan(number, 0)) return invalid('Invalid seconds')
+  return Result.succeed([Option.getOrElse(duration, () => 'maxStale' as const), number])
 }
 
-/** Throws on invalid application configuration rather than emitting a permissive policy. */
-export const format = (directives: Directives): string => {
-  const parts: string[] = []
-  for (const [wire, key] of Object.entries(flags)) if (directives[key]) parts.push(wire)
-  for (const [wire, key] of Object.entries(seconds)) {
-    const value = directives[key]
-    if (value !== undefined) parts.push(`${wire}=${value}`)
+/** Unknown extensions and duplicates are rejected. Input is limited to 8192 code units and 64 directives. */
+export const parse = (input: string): Result.Result<Directives, ParseError> => {
+  if (String.length(input) > 8192 || Option.isSome(invalidHeaderBytes(input))) {
+    return invalid('Invalid header bytes or length')
   }
-  if (directives.maxStale !== undefined)
-    parts.push(directives.maxStale === true ? 'max-stale' : `max-stale=${directives.maxStale}`)
-  const value = parts.join(', ')
-  if (parse(value)._tag === 'Invalid') throw new TypeError('Invalid Cache-Control configuration')
+  const parts = String.split(input, ',')
+  if (Array.length(parts) > 64) return invalid('Too many directives')
+  if (String.isEmpty(String.trim(input))) return invalid('Empty Cache-Control')
+
+  const empty: Result.Result<Readonly<Record<string, DirectiveEntry>>, ParseError> = Result.succeed(Record.empty())
+  const entries = Array.reduce(parts, empty, (state, part) =>
+    Result.flatMap(state, (seen) => {
+      const match = Option.getOrUndefined(matchDirective(part))
+      if (!match?.[1]) return invalid('Malformed directive')
+      const name = String.toLowerCase(match[1])
+      if (Record.has(seen, name)) return invalid(`Duplicate ${name}`)
+      return Result.map(parseDirective(name, match[2]), (entry) => Record.set(seen, name, entry))
+    }),
+  )
+  if (Result.isFailure(entries)) return Result.fail(entries.failure)
+  const directives: Directives = Record.fromEntries(Record.values(entries.success))
+  if (directives.public && directives.private) return invalid('Conflicting visibility')
+  return Result.succeed(directives)
+}
+
+/** Throws ConfigError on invalid application configuration rather than emitting a permissive policy. */
+export const format = (directives: Directives): string => {
+  const flagParts = Array.flatMap(Record.toEntries(flags), ([wire, key]) => (directives[key] ? [wire] : []))
+  const secondsParts = Array.flatMap(Record.toEntries(seconds), ([wire, key]) => {
+    const value = directives[key]
+    return value === undefined ? [] : [`${wire}=${value}`]
+  })
+  const maxStale = directives.maxStale
+  const staleParts = maxStale === undefined ? [] : [maxStale === true ? 'max-stale' : `max-stale=${maxStale}`]
+  const value = Array.join([...flagParts, ...secondsParts, ...staleParts], ', ')
+  if (Result.isFailure(parse(value))) throw new ConfigError({ message: 'Invalid Cache-Control configuration' })
   return value
 }
 
