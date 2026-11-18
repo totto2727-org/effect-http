@@ -67,8 +67,8 @@ Prefer stricter, documented security semantics to byte-for-byte Hono compatibili
 - Use camelCase filenames and publish only the six explicit module subpaths. Do not add `src/index.ts` or a root barrel export.
 - Define format, length, and numeric value constraints as named Schemas. Decode them at boundaries and retain Schema-derived validated types internally. Keep decision logic separate from value constraints.
 - A wrapped cause must be required. Represent failures without a cause as a distinct error, not an optional cause field.
-- Follow `README_TEMPLATE.md` from the Vite+ library scaffold and include executable code examples for every public API.
-- Keep Usage short. Put self-contained routed middleware examples in the individual API sections, using `HttpRouter.route` and `HttpRouter.addAll` rather than manually reconstructing route helpers.
+- Follow `README_TEMPLATE.md` from the Vite+ library scaffold. Give each module one concise example of its most common use, not an exhaustive demonstration of every exported function.
+- Keep Usage short. Show only route registration and the relevant middleware in individual API examples, using `HttpRouter.route` and `HttpRouter.addAll`. Refer to the application's existing Effect handlers instead of including server startup, request probes, storage setup, and unrelated validation.
 - Demonstrate middleware on real `HttpRouter` routes with request decoding or application state, not prebuilt responses wrapped in `Effect.succeed`. Exercise rejection paths, cache variants, and invalidation through actual requests.
 - Compose `Result` and `Option` with their combinators or Effect conversions in examples. Do not use throwing extraction to conceal parse errors or no-match outcomes.
 - Do not add helper APIs solely to expose internals to tests.
