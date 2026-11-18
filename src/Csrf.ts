@@ -1,5 +1,5 @@
-import { Array, Data, Effect, HashSet, Option, Predicate, pipe, Record, Result, String } from 'effect'
-import { HttpMiddleware, HttpServerRequest, HttpServerResponse, Url } from 'effect/http'
+import { Array, Data, Effect, HashSet, Option, Predicate, pipe, Record, Schema, String } from 'effect'
+import { HttpMiddleware, HttpServerRequest, HttpServerResponse } from 'effect/http'
 
 export interface Config {
   /** Additional exact HTTP(S) origins. Paths, credentials, query strings, and fragments are rejected. */
@@ -37,15 +37,15 @@ export class ConfigError extends Data.TaggedError('ConfigError')<{
 
 // eslint-disable-next-line no-control-regex -- Reject ASCII controls before URL normalization can strip them.
 const forbiddenUrlCharacters = String.match(/[\u0000-\u0020\u007f\\]/u)
-const absoluteHttpUrl = String.match(/^https?:\/\//iu)
+const decodeUrl = Schema.decodeUnknownOption(Schema.URLFromString)
+// Origin headers forbid URL components that the standard parser would normalize away.
 const originSyntax = String.match(/^https?:\/\/[^/@]+\/?$/iu)
 
 const parseUrl = (value: string): Option.Option<URL> =>
   Option.isSome(forbiddenUrlCharacters(value))
     ? Option.none()
     : pipe(
-        Url.fromString(value),
-        Result.getSuccess,
+        decodeUrl(value),
         Option.filter(
           (url) => (url.protocol === 'http:' || url.protocol === 'https:') && !url.username && !url.password,
         ),
@@ -116,14 +116,20 @@ export const middleware = (config: Config = {}) => {
   return HttpMiddleware.make(<E, R>(app: Effect.Effect<HttpServerResponse.HttpServerResponse, E, R>) =>
     Effect.gen(function* () {
       const request = yield* HttpServerRequest.HttpServerRequest
-      const url =
-        request.source instanceof globalThis.Request
-          ? request.source.url
-          : Option.isSome(absoluteHttpUrl(request.originalUrl))
-            ? request.originalUrl
-            : request.headers['host']
-              ? `${request.protocol ?? 'http'}://${request.headers['host']}${String.startsWith('/')(request.originalUrl) ? request.originalUrl : `/${request.originalUrl}`}`
-              : ''
+      const url = pipe(
+        decodeUrl(request.originalUrl),
+        Option.match({
+          onSome: () => request.originalUrl,
+          onNone: () =>
+            Predicate.isNullish(request.headers['host'])
+              ? ''
+              : pipe(
+                  HttpServerRequest.toURL(request),
+                  Option.map((url) => url.href),
+                  Option.getOrElse(() => ''),
+                ),
+        }),
+      )
       const decision = evaluate(
         {
           method: request.method,

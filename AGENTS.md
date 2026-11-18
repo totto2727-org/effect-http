@@ -59,6 +59,7 @@ Prefer stricter, documented security semantics to byte-for-byte Hono compatibili
 - Use Effect `Record` operations to construct and access dictionaries, including externally supplied keys. Do not add custom prototype conversion helpers.
 - Keep shared mutable state in `Ref`. Keep pure parsers and decisions synchronous with `Result` or `Option`, rather than wrapping them in an unnecessary Effect.
 - Preserve error and environment types through middleware.
+- Delegate URL parsing to `Schema.URLFromString` and request URL resolution to `HttpServerRequest.toURL`. Do not implement URL parsers, authority extraction, or manual request URL concatenation. Keep CSRF-specific restrictions separate from parsing.
 - Keep external parsing failures explicit and never turn malformed input into a permissive match.
 - Do not buffer arbitrary streams to hash or cache them.
 - Do not cache authenticated or cookie-bearing requests by default.

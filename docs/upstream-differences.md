@@ -33,6 +33,9 @@ Custom errors use `Data.TaggedError`, and ETag values use Effect-generated tagge
 Missing-value checks use Effect's nullish APIs instead of distinguishing `null` from `undefined`.
 `Accepts.parse` and `Accepts.negotiate` accept either missing-value representation.
 Media parameters use Effect `Record` construction and own-key lookup, including names such as `__proto__` and `constructor`, without a custom prototype conversion.
+CSRF URL decoding delegates to `Schema.URLFromString`; relative request targets use `HttpServerRequest.toURL` instead of manually assembling a URL.
+Absolute request targets retain their authority, and missing Host values cannot silently become localhost proof.
+Origin-only syntax, HTTP(S), credential, and control-character restrictions remain CSRF policy checks, not a replacement URL parser.
 These implementation choices preserve the documented HTTP policies rather than reproduce Hono's internal control flow.
 Hono is not installed or bundled.
 

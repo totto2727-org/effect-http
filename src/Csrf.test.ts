@@ -168,6 +168,23 @@ describe('Csrf HTTP middleware', () => {
       ).status,
     ).toBe(403)
   })
+  it.each([
+    { url: '//evil.example/action', host: 'app.example', origin: 'http://app.example', status: 204 },
+    { url: '//evil.example/action', host: 'app.example', origin: 'http://evil.example', status: 403 },
+    { url: '/action', origin: 'http://localhost', status: 403 },
+    { url: '/action', host: '[invalid', origin: 'http://app.example', status: 403 },
+    { url: target, host: 'evil.example', origin: 'https://app.example', status: 204 },
+    { url: target, host: 'evil.example', origin: 'https://evil.example', status: 403 },
+    { url: target, origin: 'https://app.example', status: 204 },
+  ])('delegates request URL resolution without changing the trusted authority: %j', async (input) => {
+    const app = Csrf.middleware()(Effect.succeed(HttpServerResponse.empty({ status: 204 })))
+    const headers = { origin: input.origin, ...(input.host ? { host: input.host } : {}) }
+    const serverRequest = HttpServerRequest.fromClientRequest(HttpClientRequest.post(input.url, { headers }))
+    const response = await Effect.runPromise(
+      app.pipe(Effect.provideService(HttpServerRequest.HttpServerRequest, serverRequest)),
+    )
+    expect(response.status).toBe(input.status)
+  })
   it('retains wildcard Vary', async () => {
     const handler = HttpEffect.toWebHandler(
       Csrf.middleware()(Effect.succeed(HttpServerResponse.empty({ headers: { vary: 'Accept, *, origin' } }))),
