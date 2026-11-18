@@ -54,7 +54,7 @@ This is release automation customization, not a Hono runtime or API change.
 The owner must confirm npm trusted publishing for `totto2727-org/effect-http` and `publish.yml` before creating a protected release tag.
 The shared action stages packages with `vp pm stage publish -r --provenance`; staging does not make a version live.
 Prefer staging-only publisher permissions when available and keep review plus 2FA approval on the owner's trusted device.
-See [README.md](../README.md) for registry linking, first-publication prerequisites, and the stage/review/approve workflow.
+See [AGENTS.md](../AGENTS.md#template-toolchain) for publication policy and owner prerequisites.
 No Hono comparison revision or import-path disposition changes are required for this configuration.
 
 ## Standards boundary

@@ -1,34 +1,17 @@
 # @totto2727/effect-http
 
-Standalone HTTP negotiation, caching, and security policies for Effect 4.
-The package fills specific gaps rather than reproducing Hono or wrapping HTTP features that Effect or effront already provides.
+HTTP content negotiation, response caching, and security middleware for Effect 4.
 
 ## Setup
 
 Use an ESM project with Node.js 24 or newer and Effect 4.1.4 or newer within major version 4.
-When registry publication is enabled, install with:
+Install with:
 
 ```bash
 vp add @totto2727/effect-http effect@^4.1.4
 ```
 
-Publication CI is enabled for pushes of `v*` tags only, not branch pushes, pull requests, GitHub releases, or manual dispatch.
-Enabling CI does not publish this package or confirm npm authorization.
-Before the first release tag, the owner must configure [npm trusted publishing](https://docs.npmjs.com/trusted-publishers/) for package `@totto2727/effect-http`, GitHub owner `totto2727-org`, repository `effect-http`, and workflow filename `publish.yml`.
-The shared action uses provenance-enabled [staged publishing](https://github.com/voidzero-dev/vite-plus/blob/main/docs/guide/package-management/stage.md), not direct publication to the live registry.
-Use staging-only publisher permissions when available; CI does not need permission to approve staged versions.
-No GitHub environment is configured, so leave the trusted publisher environment unset unless a matching protected job environment is added.
-If npm requires an initial publication before registry settings are available, the owner must perform that bootstrap manually.
-After trusted publishing is confirmed, protect release tags and push a `v<version>` tag matching `package.json` from a validated commit, using a new version for changed contents.
-The workflow installs locked dependencies, builds the archive, and stages the package with job-scoped OIDC permissions on a GitHub-hosted runner, without registry tokens.
-After CI stages a version, the owner must review it with `vp pm stage list @totto2727/effect-http`, `vp pm stage view <stage-id>`, and `vp pm stage download <stage-id>`.
-Only after review, the owner can run `vp pm stage approve <stage-id>` on a trusted device and complete the required 2FA to make the version live.
-Use `vp pm stage reject <stage-id>` instead if review finds a problem.
-Neither staging nor approval is performed merely by enabling this workflow; release tags, uploads, and approval require separate authorization.
-The hook-free Nix `ci` shell avoids calling `vp config` before the TypeScript setup installs Vite+.
-GitHub repository visibility is managed separately in infra and does not authorize npm publication.
 Effect is the only runtime peer dependency.
-Hono is neither installed nor bundled.
 
 ## Content negotiation without middleware
 
@@ -62,16 +45,13 @@ const requestResult = Accepts.negotiateRequest(
 `kind` is `mediaType`, `language`, `encoding`, or `charset`.
 A missing header accepts any supported offer.
 An empty header accepts none, except for the implicit `identity` encoding.
-There is no fallback that returns a representation the client rejected.
-Applications map `None` to `406`, an application error, or another explicit policy.
+Handle `None` explicitly, for example by returning `406`.
 
 Media negotiation respects range specificity, parameters, and quality-zero exclusions.
 Language negotiation uses RFC 4647 basic filtering: `en` matches an offered `en-US`, but `en-US` does not match an offered `en`.
-Encoding negotiation handles the implicit `identity` coding separately from wildcards.
 Equal effective qualities use server offer order, while duplicate ranges of equal specificity use the lowest quality.
-Malformed input fails the entire parse instead of accepting a permissive subset.
-The parser bounds header size, range count, and parameters, and rejects unsupported extensions after `q`.
-See the exported JSDoc for the exact bounds and grammar.
+Malformed or oversized headers fail parsing.
+The exported JSDoc describes the grammar and parser limits.
 
 ## Response policies
 
@@ -93,11 +73,9 @@ const configured = app.pipe(Effect.provide(Digest.layerWebCrypto))
 ```
 
 `configured` still requires the HTTP request service supplied by the server.
-The library does not build a runtime or provide cryptographic services internally.
-Automatic conditional handling runs in Effect's pre-response phase, not merely after the route handler.
-With Effect's deferred compression middleware, use `app.pipe(ConditionalRequest.middleware(options), HttpMiddleware.compression(compressionOptions))` so compression registers first and validation runs on the selected response afterward.
-Compressed streams are not buffered to invent an ETag; supply a known validator, preferably weak when it identifies equivalent content across encodings.
-Other response transformations must preserve this ordering contract: a strong ETag describes the final representation bytes.
+With Effect compression, use `app.pipe(ConditionalRequest.middleware(options), HttpMiddleware.compression(compressionOptions))` so validation runs on the final representation.
+For compressed streams, supply a known validator, preferably weak when it identifies equivalent content across encodings.
+A strong ETag must describe the final response bytes.
 
 ### Cache-Control
 
@@ -105,9 +83,8 @@ Other response transformations must preserve this ordering contract: a strong ET
 `CacheControl.format(directives)` validates application configuration and serializes a header, throwing for invalid configuration.
 `CacheControl.middleware(directives)` applies that header to successful responses.
 
-The initial grammar supports visibility, freshness, revalidation, immutable, no-transform, only-if-cached, min-fresh, and max-stale directives.
-Duplicate directives, conflicting visibility, unknown extensions, and unsupported forms are rejected rather than silently ignored.
-This conservative grammar can bypass caching for headers that a full HTTP cache would understand.
+Supported directives include visibility, freshness, revalidation, immutable, no-transform, only-if-cached, min-fresh, and max-stale.
+Duplicate directives, conflicting visibility, and unsupported directives are rejected.
 
 ### Conditional requests
 
@@ -123,7 +100,6 @@ It does not drain streams or read files, raw bodies, or FormData.
 For streaming or static content, supply known validators or use Effect's static server.
 
 **Evaluate write preconditions before performing a mutation.**
-Response middleware cannot undo side effects.
 A matching `If-None-Match` becomes `304` for GET/HEAD and `412` for unsafe methods in the pure evaluator.
 A `304` retains validators, Vary, cookies, and selected-representation encoding metadata but removes body-length and body-type headers.
 
@@ -153,31 +129,27 @@ const program = Effect.gen(function* () {
 
 Create one cache per intended sharing boundary, not once per request.
 `publicRoute: true` is a caller guarantee that output depends only on the request target, host, and declared header variants, never undeclared identity or headers.
-The cache uses Effect's capacity-bounded cache and Clock, with no process-global state.
-It stores only successful GET responses with bounded in-memory bodies and copies bytes before storage and on hits.
+The cache stores only successful GET responses with bounded in-memory bodies.
 
 Authorization, Cookie, range, conditional requests, Pragma, and request freshness constraints bypass reuse and storage.
 Responses with Set-Cookie, Expires, private/no-store/no-cache, unknown or undeclared Vary, streaming bodies, or SSE content are not stored.
-Expires is deliberately bypassed rather than partially implementing its interaction with other freshness directives.
 Response max-age/s-maxage and existing Age/Date limit the configured lifetime, and hits receive an updated Age.
 Every configured variant participates in the key and is emitted in Vary on stored responses, even if the origin omits it.
 
-This is an explicit public route cache, not a full RFC 9111 proxy cache.
-It does not implement QUERY caching, stale serving, background revalidation, range combination, or automatic cross-route mutation invalidation.
+QUERY caching, stale serving, and background revalidation are not supported.
 Call `invalidateAll` after writes, including mutations outside the cached route.
-Invalidation fences older in-flight reads from repopulating the current cache generation, but does not cancel those callers or undo the response they already selected.
+Invalidation prevents pending reads from repopulating the cache but does not cancel their responses.
 
 ## CSRF and security headers
 
 `Csrf.decide({ method, url, origin, secFetchSite }, config)` exposes the same decision used by `Csrf.middleware(config)`.
-Configuration accepts additional exact `allowedOrigins`; paths, credentials, queries, fragments, malformed origins, and wildcard origins are rejected.
+`allowedOrigins` accepts additional exact origins, not wildcards or URL paths.
 GET, HEAD, and OPTIONS pass without proof.
 Unsafe methods, including JSON requests, require a trusted Origin or same-origin Fetch Metadata, and contradictory metadata is rejected.
 The middleware does not read forwarded headers, rejects with `403` and `Cache-Control: no-store` before the handler runs, and merges `Origin` and `Sec-Fetch-Site` into Vary.
 Relative server targets require Host and use the server request's protocol, defaulting to HTTP as Effect does.
 For TLS termination, configure trusted proxy handling at the application's boundary so the request carries the correct protocol.
 Use this policy on browser-authenticated routes, not as authentication for non-browser clients that can forge these headers.
-Server-to-server routes that omit browser headers need a separate explicit policy.
 
 `SecureHeaders.headers(config)` is a pure serializer.
 `SecureHeaders.serializeContentSecurityPolicy(policy)` formats a typed static CSP and rejects header and directive delimiter injection.
@@ -189,14 +161,8 @@ Nonce generation, rendering integration, and reporting are not included.
 
 ## Scope and upstream
 
-The committed [Hono import-path table](./docs/hono-compatibility.md) covers all 104 concrete public import paths at the recorded Hono commit, including the 27 built-in middleware and 14 helpers.
-The inventory expands 76 fixed export paths and all 28 existing modules behind `./utils/*`, including nested JWT modules and type-only entries.
-Every path names a concrete Effect or effront counterpart, or states why this package does not implement it.
-Application composition, React rendering, UI styling, native hosting, static assets, and Server Function runtime policies already covered by effront are outside this package's scope.
-Generic negotiation and public-route response policies do not replace effront's HTML/Flight protocol, private response policy, or file-serving validators.
-The [upstream record](./docs/upstream-differences.md) pins Hono, Effect, effront, and template revisions and explains retained security and operational differences.
-Hono is a behavioral upstream, not a runtime dependency or a source-tree fork.
-Effect 3 and `@effect/platform` compatibility are not provided.
+See the [Hono import-path table](./docs/hono-compatibility.md) for API mappings and the [upstream record](./docs/upstream-differences.md) for pinned revisions and policy differences.
+Application rendering and hosting remain in [effront](https://github.com/totto2727-org/effront).
 
 ## Development and license
 
