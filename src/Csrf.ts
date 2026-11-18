@@ -1,4 +1,4 @@
-import { Array, Data, Effect, HashSet, Option, pipe, Record, Result, String } from 'effect'
+import { Array, Data, Effect, HashSet, Option, Predicate, pipe, Record, Result, String } from 'effect'
 import { HttpMiddleware, HttpServerRequest, HttpServerResponse, Url } from 'effect/http'
 
 export interface Config {
@@ -31,7 +31,7 @@ export class ConfigError extends Data.TaggedError('ConfigError')<{
   readonly cause?: unknown
 }> {
   constructor(message?: string, options?: ErrorOptions) {
-    super(message === undefined ? (options ?? {}) : { ...options, message })
+    super(Predicate.isNullish(message) ? (options ?? {}) : { ...options, message })
   }
 }
 
@@ -71,15 +71,16 @@ const evaluate = (request: Request, allowedOrigins: HashSet.HashSet<string>): De
   if (Array.contains(['GET', 'HEAD', 'OPTIONS'], String.toUpperCase(request.method))) return { allowed: true }
   const target = parseUrl(request.url)
   if (Option.isNone(target)) return { allowed: false, reason: 'invalid-target' }
-  const origin = request.origin === undefined ? Option.none<string>() : parseOrigin(request.origin)
-  if (request.origin !== undefined && Option.isNone(origin)) return { allowed: false, reason: 'invalid-origin' }
+  const origin = Predicate.isNullish(request.origin) ? Option.none<string>() : parseOrigin(request.origin)
+  if (Predicate.isNotNullish(request.origin) && Option.isNone(origin))
+    return { allowed: false, reason: 'invalid-origin' }
   const sameOrigin = Option.contains(origin, target.value.origin)
   if (Option.isSome(origin) && !sameOrigin && !HashSet.has(allowedOrigins, origin.value)) {
     return { allowed: false, reason: 'untrusted-origin' }
   }
   const site = request.secFetchSite
   if (
-    site !== undefined &&
+    Predicate.isNotNullish(site) &&
     (!Array.contains(['same-origin', 'same-site', 'cross-site'], site) ||
       (site === 'same-origin' && Option.isSome(origin) && !sameOrigin) ||
       (site === 'cross-site' && sameOrigin))

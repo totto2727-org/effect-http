@@ -1,4 +1,4 @@
-import { Array, Data, Effect, Number, Option, Record, Result, Schema, String } from 'effect'
+import { Array, Data, Effect, Number, Option, Predicate, Record, Result, Schema, String } from 'effect'
 import * as HttpServerResponse from 'effect/http/HttpServerResponse'
 
 export interface Directives {
@@ -46,12 +46,12 @@ type DirectiveEntry =
 const parseDirective = (name: string, value: string | undefined): Result.Result<DirectiveEntry, ParseError> => {
   const flag = Record.get<string, FlagKey>(flags, name)
   if (Option.isSome(flag)) {
-    return value === undefined ? Result.succeed([flag.value, true]) : invalid(`Unexpected value for ${name}`)
+    return Predicate.isNullish(value) ? Result.succeed([flag.value, true]) : invalid(`Unexpected value for ${name}`)
   }
 
   const duration = Record.get<string, SecondsKey>(seconds, name)
   if (Option.isNone(duration) && name !== 'max-stale') return invalid(`Unsupported directive ${name}`)
-  if (value === undefined) {
+  if (Predicate.isNullish(value)) {
     return name === 'max-stale' ? Result.succeed(['maxStale', true]) : invalid(`Missing value for ${name}`)
   }
 
@@ -90,10 +90,10 @@ export const format = (directives: Directives): string => {
   const flagParts = Array.flatMap(Record.toEntries(flags), ([wire, key]) => (directives[key] ? [wire] : []))
   const secondsParts = Array.flatMap(Record.toEntries(seconds), ([wire, key]) => {
     const value = directives[key]
-    return value === undefined ? [] : [`${wire}=${value}`]
+    return Predicate.isNullish(value) ? [] : [`${wire}=${value}`]
   })
   const maxStale = directives.maxStale
-  const staleParts = maxStale === undefined ? [] : [maxStale === true ? 'max-stale' : `max-stale=${maxStale}`]
+  const staleParts = Predicate.isNullish(maxStale) ? [] : [maxStale === true ? 'max-stale' : `max-stale=${maxStale}`]
   const value = Array.join([...flagParts, ...secondsParts, ...staleParts], ', ')
   if (Result.isFailure(parse(value))) throw new ConfigError({ message: 'Invalid Cache-Control configuration' })
   return value

@@ -40,7 +40,7 @@ export interface Config {
 
 export class ConfigError extends Data.TaggedError('ConfigError')<{ readonly message?: string }> {
   constructor(message?: string) {
-    super(message === undefined ? {} : { message })
+    super(Predicate.isNullish(message) ? {} : { message })
   }
 }
 
@@ -131,8 +131,8 @@ export const headers = (config: Config = {}): Readonly<Record<string, string>> =
       'same-site',
       'cross-origin',
     ]),
-    Option.map(Option.fromUndefinedOr(config.hsts), serializeHsts),
-    Option.map(Option.fromUndefinedOr(config.contentSecurityPolicy), (policy) => [
+    Option.map(Option.fromNullishOr(config.hsts), serializeHsts),
+    Option.map(Option.fromNullishOr(config.contentSecurityPolicy), (policy) => [
       'content-security-policy',
       serializeContentSecurityPolicy(policy),
     ]),
@@ -144,8 +144,8 @@ const serializeHsts = ({ maxAge, includeSubDomains, preload }: NonNullable<Confi
   if (
     !isSafeInteger(maxAge) ||
     Number.isLessThan(maxAge, 0) ||
-    (includeSubDomains !== undefined && !Predicate.isBoolean(includeSubDomains)) ||
-    (preload !== undefined && !Predicate.isBoolean(preload))
+    (Predicate.isNotNullish(includeSubDomains) && !Predicate.isBoolean(includeSubDomains)) ||
+    (Predicate.isNotNullish(preload) && !Predicate.isBoolean(preload))
   )
     throw new ConfigError('Invalid HSTS configuration')
   if (preload && (!includeSubDomains || Number.isLessThan(maxAge, 31536000)))

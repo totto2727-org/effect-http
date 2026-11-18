@@ -55,6 +55,8 @@ Prefer stricter, documented security semantics to byte-for-byte Hono compatibili
 - Add no runtime dependencies without a concrete benefit that cannot reasonably be supplied by Effect or Web standards.
 - Compose policy logic with Effect's collection, string, numeric, parsing, and HTTP APIs instead of native method chains or mutable loop accumulators.
 - Use `Result.Result` for parsing outcomes, `Data.TaggedError` for custom errors, and Effect constructors for tagged values. Do not handwrite result unions or `_tag` fields.
+- Use `Predicate.isNullish`, `Predicate.isNotNullish`, and `Option.fromNullishOr` for missing values. Do not distinguish `null` from `undefined` without a domain requirement.
+- Use Effect `Record` operations to construct and access dictionaries, including externally supplied keys. Do not add custom prototype conversion helpers.
 - Keep shared mutable state in `Ref`. Keep pure parsers and decisions synchronous with `Result` or `Option`, rather than wrapping them in an unnecessary Effect.
 - Preserve error and environment types through middleware.
 - Keep external parsing failures explicit and never turn malformed input into a permissive match.
@@ -76,9 +78,9 @@ Prefer stricter, documented security semantics to byte-for-byte Hono compatibili
 - Do not add a CLI, `CLAUDE.md`, `package.nix`, or a Nix build output.
 - Keep all shared `totto2727-org/monorepo` action references on `@main`.
 - Keep inherited CI and publication workflows unchanged unless a demonstrated project requirement needs a change.
-- Do not replace publication on pushes to `main` with tag or release triggers, and preserve existing tag triggers.
-- Publication CI is explicitly enabled in `publish.yml`, and the manifest is publishable. Before creating any release tag, require the owner's confirmation of npm trusted publishing for `totto2727-org/effect-http` and workflow filename `publish.yml`, with staging-only permissions when available and no environment unless a matching protected job environment is configured. The shared publisher stages versions; the owner reviews and approves them with 2FA before live publication. Never stage or approve merely to test CI.
-- The actual inherited trigger is a push of a `v*` tag only. Use a protected `v<version>` tag matching the manifest from a validated commit. Never create a release tag merely to test CI.
+- Publication runs on pushes to `main`, including merges. Do not add tag or release triggers.
+- Publication CI is explicitly enabled in `publish.yml`, and the manifest is publishable. Before merging publication changes to `main`, require the owner's confirmation of npm trusted publishing for `totto2727-org/effect-http` and workflow filename `publish.yml`, with staging-only permissions when available and no environment unless a matching protected job environment is configured. The shared publisher stages versions; the owner reviews and approves them with 2FA before live publication. Never stage or approve merely to test CI.
+- Protect `main` and merge validated changes to trigger publication. Tag pushes do not publish. Never merge or publish merely to test CI.
 - Keep the hook-free `ci` Nix shell for setup, building, and the shared publish action so Nix setup does not run `vp config` before Vite+ is installed.
 - Enabling CI is not registry authorization or a release. If registry linking needs an initial publication, the owner must bootstrap it manually.
 - Never add long-lived npm tokens or publish as part of a coding task without authorization.

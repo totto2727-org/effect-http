@@ -36,14 +36,16 @@ const requestResult = Accepts.negotiateRequest(
 
 | API                                                 | Input and output                                                                             |
 | --------------------------------------------------- | -------------------------------------------------------------------------------------------- |
-| `Accepts.parse(kind, header)`                       | Parses `string \| null` into `Result<Parsed, ParseError>`.                                   |
+| `Accepts.parse(kind, header)`                       | Parses `string \| null \| undefined` into `Result<Parsed, ParseError>`.                      |
 | `Accepts.negotiate(kind, header, supports)`         | Returns `Result<Option<string>, ParseError>`, preserving the selected entry from `supports`. |
 | `Accepts.negotiateHeaders(kind, headers, supports)` | Reads Web `Headers` without an Effect runtime.                                               |
 | `Accepts.negotiateRequest(kind, request, supports)` | Reads a Web `Request` without consuming its body.                                            |
 | `Accepts.negotiateEffect(kind, supports)`           | Returns an Effect requiring `HttpServerRequest`, with a typed `ParseError`.                  |
 
 `kind` is `mediaType`, `language`, `encoding`, or `charset`.
-A missing header accepts any supported offer.
+`Accepts` provides helpers, not middleware.
+Applications currently map parsing failures and unmatched offers to responses and set the appropriate `Vary` header.
+A missing header (`null` or `undefined`) accepts any supported offer.
 An empty header accepts none, except for the implicit `identity` encoding.
 Handle `None` explicitly, for example by returning `406`.
 

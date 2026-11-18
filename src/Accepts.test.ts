@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vite-plus/test'
 
 import { Accepts } from './index.ts'
 
-const choose = (kind: Accepts.Kind, header: string | null, supports: ReadonlyArray<string>) => {
+const choose = (kind: Accepts.Kind, header: string | null | undefined, supports: ReadonlyArray<string>) => {
   const result = Accepts.negotiate(kind, header, supports)
   if (Result.isFailure(result)) throw new Error(result.failure.reason)
   return Option.getOrNull(result.success)
@@ -79,6 +79,8 @@ describe('Accepts language, charset and encoding policies', () => {
     for (const kind of ['mediaType', 'language', 'charset', 'encoding'] satisfies Accepts.Kind[]) {
       const supports = kind === 'mediaType' ? ['text/html'] : ['en']
       expect(choose(kind, null, supports)).toBe(supports[0])
+      expect(choose(kind, undefined, supports)).toBe(supports[0])
+      expect(Accepts.parse(kind, undefined)).toEqual(Accepts.parse(kind, null))
       expect(choose(kind, '', supports)).toBeNull()
       expect(choose(kind, ' \t ', supports)).toBeNull()
     }
@@ -194,7 +196,11 @@ describe('Accepts strict parsing', () => {
       ['__proto__']: 'x',
       constructor: 'y',
     })
-    expect(Object.getPrototypeOf(parameters)).toBeNull()
+    expect(choose('mediaType', 'text/html;__proto__=x', ['text/html'])).toBeNull()
+    expect(choose('mediaType', 'text/html;constructor=y', ['text/html'])).toBeNull()
+    expect(choose('mediaType', 'text/html;toString=z', ['text/html'])).toBeNull()
+    expect(choose('mediaType', 'text/html;__proto__=x', ['text/html;__proto__=y'])).toBeNull()
+    expect(Result.isFailure(Accepts.parse('mediaType', 'text/html;__proto__=x;__proto__=y'))).toBe(true)
   })
 })
 

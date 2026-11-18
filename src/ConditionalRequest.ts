@@ -1,4 +1,4 @@
-import { Array, Data, DateTime, Effect, Option, Schema, String } from 'effect'
+import { Array, Data, DateTime, Effect, Option, Predicate, Schema, String } from 'effect'
 import * as Digest from 'effect/crypto/Digest'
 import * as Etag from 'effect/http/Etag'
 import * as Headers from 'effect/http/Headers'
@@ -44,8 +44,8 @@ const listMatches = (value: string, tag: Etag.Etag | undefined, exists: boolean,
     complete &&
     !String.endsWith(',')(input) &&
     Array.some(items, (item) => {
-      const candidate = item[1] === undefined ? undefined : parseEtag(item[1])
-      return candidate !== undefined && tag !== undefined && matches(candidate, tag, strong)
+      const candidate = Predicate.isNullish(item[1]) ? undefined : parseEtag(item[1])
+      return Predicate.isNotNullish(candidate) && Predicate.isNotNullish(tag) && matches(candidate, tag, strong)
     })
   )
 }
@@ -72,18 +72,18 @@ export const evaluate = ({ method, headers, etag, lastModified, exists = true }:
     Option.getOrUndefined,
   )
   const ifMatch = headers['if-match']
-  if (ifMatch !== undefined && !listMatches(ifMatch, etag, exists, true)) return 'PreconditionFailed'
+  if (Predicate.isNotNullish(ifMatch) && !listMatches(ifMatch, etag, exists, true)) return 'PreconditionFailed'
   const unmodified = headers['if-unmodified-since']
-  if (ifMatch === undefined && unmodified !== undefined && modified !== undefined) {
+  if (Predicate.isNullish(ifMatch) && Predicate.isNotNullish(unmodified) && Predicate.isNotNullish(modified)) {
     const limit = date(unmodified)
-    if (limit !== undefined && modified > limit) return 'PreconditionFailed'
+    if (Predicate.isNotNullish(limit) && modified > limit) return 'PreconditionFailed'
   }
   const none = headers['if-none-match']
-  if (none !== undefined) {
+  if (Predicate.isNotNullish(none)) {
     if (listMatches(none, etag, exists, false)) return retrieval ? 'NotModified' : 'PreconditionFailed'
-  } else if (retrieval && modified !== undefined && headers['if-modified-since'] !== undefined) {
+  } else if (retrieval && Predicate.isNotNullish(modified) && Predicate.isNotNullish(headers['if-modified-since'])) {
     const limit = date(headers['if-modified-since'])
-    if (limit !== undefined && modified <= limit) return 'NotModified'
+    if (Predicate.isNotNullish(limit) && modified <= limit) return 'NotModified'
   }
   return 'Proceed'
 }
@@ -95,24 +95,28 @@ export const apply = (
   validators: Validators = {},
 ): HttpServerResponse.HttpServerResponse => {
   const etag =
-    response.headers['etag'] === undefined && validators.etag !== undefined ? Etag.toString(validators.etag) : undefined
-  if (etag !== undefined && parseEtag(etag) === undefined) throw new ConfigError({ message: 'Invalid ETag' })
-  const withEtag = etag === undefined ? response : HttpServerResponse.setHeader(response, 'etag', etag)
+    Predicate.isNullish(response.headers['etag']) && Predicate.isNotNullish(validators.etag)
+      ? Etag.toString(validators.etag)
+      : undefined
+  if (Predicate.isNotNullish(etag) && Predicate.isNullish(parseEtag(etag)))
+    throw new ConfigError({ message: 'Invalid ETag' })
+  const withEtag = Predicate.isNullish(etag) ? response : HttpServerResponse.setHeader(response, 'etag', etag)
   const lastModified =
-    response.headers['last-modified'] === undefined && validators.lastModified !== undefined
+    Predicate.isNullish(response.headers['last-modified']) && Predicate.isNotNullish(validators.lastModified)
       ? DateTime.make(validators.lastModified).pipe(
           Option.map(Headers.formatHttpDate),
           Option.getOrThrowWith(() => new ConfigError({ message: 'Invalid Last-Modified' })),
         )
       : undefined
-  const output =
-    lastModified === undefined ? withEtag : HttpServerResponse.setHeader(withEtag, 'last-modified', lastModified)
+  const output = Predicate.isNullish(lastModified)
+    ? withEtag
+    : HttpServerResponse.setHeader(withEtag, 'last-modified', lastModified)
   if (response.status !== 200) return output
   const decision = evaluate({
     method: request.method,
     headers: request.headers,
     exists: validators.exists,
-    etag: output.headers['etag'] === undefined ? undefined : parseEtag(output.headers['etag']),
+    etag: Predicate.isNullish(output.headers['etag']) ? undefined : parseEtag(output.headers['etag']),
     lastModified: Option.fromNullishOr(output.headers['last-modified']).pipe(
       Option.flatMap(HttpDate.parse),
       Option.map(DateTime.toDateUtc),
@@ -146,7 +150,8 @@ export const middleware = (options: { readonly maxBodyBytes: number }) => {
       HttpEffect.withPreResponseHandler(handler, (request, response) =>
         Effect.gen(function* () {
           if (request.method !== 'GET' && request.method !== 'HEAD') return response
-          if (request.method === 'HEAD' || response.headers['etag'] !== undefined) return apply(response, request)
+          if (request.method === 'HEAD' || Predicate.isNotNullish(response.headers['etag']))
+            return apply(response, request)
           const body = response.body
           if (response.status !== 200 || (body._tag !== 'Empty' && body._tag !== 'Uint8Array'))
             return apply(response, request)

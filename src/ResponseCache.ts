@@ -10,6 +10,7 @@ import {
   HashSet,
   Number,
   Option,
+  Predicate,
   Ref,
   Result,
   Schema,
@@ -76,7 +77,7 @@ const blockedRequest = (request: HttpServerRequest.HttpServerRequest): boolean =
         'pragma',
         'cache-control',
       ],
-      (key) => headers[key] !== undefined,
+      (key) => Predicate.isNotNullish(headers[key]),
     )
   )
 }
@@ -90,8 +91,8 @@ const storableResponse = (
   if (
     response.status !== 200 ||
     !Cookies.isEmpty(response.cookies) ||
-    headers['set-cookie'] !== undefined ||
-    headers['expires'] !== undefined ||
+    Predicate.isNotNullish(headers['set-cookie']) ||
+    Predicate.isNotNullish(headers['expires']) ||
     (body._tag !== 'Empty' && body._tag !== 'Uint8Array') ||
     (body._tag === 'Uint8Array' && body.body.length > maxBodyBytes) ||
     Option.fromNullishOr(headers['content-type']).pipe(
@@ -101,7 +102,7 @@ const storableResponse = (
   )
     return false
   const varyHeader = headers['vary']
-  if (varyHeader === undefined) return true
+  if (Predicate.isNullish(varyHeader)) return true
   if (String.length(varyHeader) > 8192 || Option.isSome(invalidHeaderBytes(varyHeader))) return false
   const declared = pipe(
     varyHeader,
@@ -120,18 +121,19 @@ const freshness = (
 ) =>
   Option.gen(function* () {
     const control = headers['cache-control']
-    const directives = control === undefined ? {} : yield* Result.getSuccess(CacheControl.parse(control))
+    const directives = Predicate.isNullish(control) ? {} : yield* Result.getSuccess(CacheControl.parse(control))
     if (directives.private || directives.noStore || directives.noCache) return yield* Option.none()
     const seconds = directives.sMaxAge ?? directives.maxAge
-    const lifetime = seconds === undefined ? ttlMilliseconds : Number.min(ttlMilliseconds, seconds * 1000)
+    const lifetime = Predicate.isNullish(seconds) ? ttlMilliseconds : Number.min(ttlMilliseconds, seconds * 1000)
     const age = headers['age']
-    if (age !== undefined && (String.length(age) > 16 || Option.isNone(String.match(/^\d+$/)(age)))) {
+    if (Predicate.isNotNullish(age) && (String.length(age) > 16 || Option.isNone(String.match(/^\d+$/)(age)))) {
       return yield* Option.none()
     }
-    const ageSeconds = age === undefined ? 0 : yield* Number.parse(age).pipe(Option.filter(isAgeSeconds))
+    const ageSeconds = Predicate.isNullish(age) ? 0 : yield* Number.parse(age).pipe(Option.filter(isAgeSeconds))
     const originDate = headers['date']
-    const apparentAge =
-      originDate === undefined ? 0 : Number.max(0, storedAt - DateTime.toEpochMillis(yield* HttpDate.parse(originDate)))
+    const apparentAge = Predicate.isNullish(originDate)
+      ? 0
+      : Number.max(0, storedAt - DateTime.toEpochMillis(yield* HttpDate.parse(originDate)))
     // Corrected initial age retains subsecond apparent age and includes the origin response delay.
     const initialAgeMilliseconds = Number.max(ageSeconds * 1000 + Number.max(0, storedAt - requestedAt), apparentAge)
     const remaining = lifetime - initialAgeMilliseconds

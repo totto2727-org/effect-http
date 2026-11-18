@@ -30,6 +30,9 @@ Effect remains the only runtime peer dependency.
 Policy composition uses Effect's collection and string APIs, `Result` and `Option`, and `Ref` for cache invalidation state.
 `CacheControl.parse` returns `Result<Directives, ParseError>` rather than a package-specific result union.
 Custom errors use `Data.TaggedError`, and ETag values use Effect-generated tagged constructors.
+Missing-value checks use Effect's nullish APIs instead of distinguishing `null` from `undefined`.
+`Accepts.parse` and `Accepts.negotiate` accept either missing-value representation.
+Media parameters use Effect `Record` construction and own-key lookup, including names such as `__proto__` and `constructor`, without a custom prototype conversion.
 These implementation choices preserve the documented HTTP policies rather than reproduce Hono's internal control flow.
 Hono is not installed or bundled.
 
@@ -52,10 +55,11 @@ Hono is not installed or bundled.
 ## Publication configuration
 
 Unlike the disabled scaffold workflow, `.github/workflows/publish.yml` is enabled and `package.json` no longer marks the package private, as explicitly requested for publication CI.
-The inherited trigger remains pushes of `v*` tags only, with job-scoped OIDC and the shared `@main` actions unchanged.
+Publication runs on pushes to `main`, including merges, rather than the scaffold revision's tag-only trigger, as explicitly requested.
+Job-scoped OIDC and the shared `@main` actions are unchanged.
 Setup, artifact building, and the publisher use the existing hook-free Nix `ci` shell to avoid executing `vp config` before Vite+ installation.
 This is release automation customization, not a Hono runtime or API change.
-The owner must confirm npm trusted publishing for `totto2727-org/effect-http` and `publish.yml` before creating a protected release tag.
+The owner must confirm npm trusted publishing for `totto2727-org/effect-http` and `publish.yml` before merging publication changes to `main`.
 The shared action stages packages with `vp pm stage publish -r --provenance`; staging does not make a version live.
 Prefer staging-only publisher permissions when available and keep review plus 2FA approval on the owner's trusted device.
 See [AGENTS.md](../AGENTS.md#template-toolchain) for publication policy and owner prerequisites.

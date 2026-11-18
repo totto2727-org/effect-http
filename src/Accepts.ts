@@ -1,4 +1,4 @@
-import { Array, Data, Effect, Iterable, Number, Option, Record, Result, String, pipe } from 'effect'
+import { Array, Data, Effect, Iterable, Number, Option, Predicate, Record, Result, String, pipe } from 'effect'
 import * as HttpServerRequest from 'effect/http/HttpServerRequest'
 
 /** The four independent HTTP preference grammars. */
@@ -40,11 +40,11 @@ const invalid = (kind: Kind, reason: string): Result.Result<never, ParseError> =
 const split = (input: string, delimiter: ',' | ';'): ReadonlyArray<string> | undefined => {
   // The optional closing quote lets the scan report an unterminated string instead of skipping it.
   const markers = Array.fromIterable(String.matchAll(/"(?:[^"\\]|\\.)*(")?|[;,]/g)(input))
-  if (Array.some(markers, ([marker, closing]) => String.startsWith('"')(marker) && closing === undefined)) {
+  if (Array.some(markers, ([marker, closing]) => String.startsWith('"')(marker) && Predicate.isNullish(closing))) {
     return undefined
   }
   const separators = Array.filterMap(markers, ({ 0: marker, index }) =>
-    marker === delimiter && index !== undefined ? Result.succeed(index) : Result.fail(undefined),
+    marker === delimiter && Predicate.isNotNullish(index) ? Result.succeed(index) : Result.fail(undefined),
   )
   return Array.zipWith(Array.prepend(separators, -1), Array.append(separators, input.length), (left, right) =>
     pipe(input, String.slice(left + 1, right), String.trim),
@@ -61,9 +61,9 @@ const validValue = (kind: Kind, value: string, offered: boolean): boolean => {
   if (kind === 'mediaType') {
     const [type, subtype, extra] = String.split(value, '/')
     return (
-      type !== undefined &&
-      subtype !== undefined &&
-      extra === undefined &&
+      Predicate.isNotNullish(type) &&
+      Predicate.isNotNullish(subtype) &&
+      Predicate.isNullish(extra) &&
       matches(token, type) &&
       matches(token, subtype) &&
       (!String.includes('*')(type) || type === '*') &&
@@ -80,12 +80,6 @@ interface Parameters {
   readonly values: Readonly<Record<string, string>>
   readonly quality: Option.Option<number>
 }
-
-// Preserve the public dictionary shape without exposing inherited keys.
-const parameterDictionary = <A extends Readonly<Record<string, string>>>(values: A): A => ({
-  __proto__: null,
-  ...values,
-})
 
 const parseParameter = (
   kind: Kind,
@@ -107,7 +101,7 @@ const parseParameter = (
     return invalid(kind, 'Unsupported or duplicate parameter')
   }
   const decoded = parameterValue(raw)
-  if (decoded === undefined) return invalid(kind, 'Invalid parameter value')
+  if (Predicate.isNullish(decoded)) return invalid(kind, 'Invalid parameter value')
   return Result.succeed({
     ...parameters,
     values: Record.set(parameters.values, name, name === 'charset' ? String.toLowerCase(decoded) : decoded),
@@ -116,7 +110,7 @@ const parseParameter = (
 
 const parsePreference = (kind: Kind, input: string, offered: boolean): Result.Result<Preference, ParseError> => {
   const parts = split(input, ';')
-  if (parts === undefined || parts.length > 129) return invalid(kind, 'Invalid preference value')
+  if (Predicate.isNullish(parts) || parts.length > 129) return invalid(kind, 'Invalid preference value')
   const [rawValue, ...rawParameters] = parts
   const value = String.toLowerCase(rawValue ?? '')
   if (!validValue(kind, value, offered)) {
@@ -133,7 +127,7 @@ const parsePreference = (kind: Kind, input: string, offered: boolean): Result.Re
     ),
     Result.map(({ values, quality }) => ({
       value,
-      parameters: parameterDictionary(values),
+      parameters: values,
       quality: Option.getOrElse(quality, () => 1),
     })),
   )
@@ -146,12 +140,12 @@ const parsePreference = (kind: Kind, input: string, offered: boolean): Result.Re
  * q must be an unquoted RFC quality with at most three decimals. Duplicate parameters,
  * empty list members, and Accept extensions after q are rejected.
  */
-export const parse = (kind: Kind, header: string | null): Result.Result<Parsed, ParseError> => {
-  if (header === null) return Result.succeed({ kind, missing: true, preferences: [] })
+export const parse = (kind: Kind, header: string | null | undefined): Result.Result<Parsed, ParseError> => {
+  if (Predicate.isNullish(header)) return Result.succeed({ kind, missing: true, preferences: [] })
   if (!isBoundedAscii(header)) return invalid(kind, 'Invalid or oversized header')
   if (String.trim(header) === '') return Result.succeed({ kind, missing: false, preferences: [] })
   const members = split(header, ',')
-  if (members === undefined || members.length > 128) return invalid(kind, 'Invalid or excessive preference list')
+  if (Predicate.isNullish(members) || members.length > 128) return invalid(kind, 'Invalid or excessive preference list')
   return pipe(
     members,
     Iterable.map((member) => parsePreference(kind, member, false)),
@@ -167,7 +161,7 @@ const specificity = (kind: Kind, range: Preference, offer: Preference): number =
     if (type !== '*' && type !== offeredType) return -1
     if (subtype !== '*' && subtype !== offeredSubtype) return -1
     const parameters = Record.toEntries(range.parameters)
-    if (!Array.every(parameters, ([key, value]) => offer.parameters[key] === value)) return -1
+    if (!Array.every(parameters, ([key, value]) => Option.contains(value)(Record.get(offer.parameters, key)))) return -1
     return (type === '*' ? 0 : subtype === '*' ? 1 : 2) * 1000 + parameters.length
   }
   if (range.value === '*') return 0
@@ -207,7 +201,7 @@ const effectiveQuality = (parsed: Parsed, offer: Preference): number => {
  */
 export const negotiate = (
   kind: Kind,
-  header: string | null,
+  header: string | null | undefined,
   supports: ReadonlyArray<string>,
 ): Result.Result<Option.Option<string>, ParseError> =>
   Result.flatMap(parse(kind, header), (parsed) => {
@@ -246,5 +240,5 @@ export const negotiateEffect = (
   supports: ReadonlyArray<string>,
 ): Effect.Effect<Option.Option<string>, ParseError, HttpServerRequest.HttpServerRequest> =>
   Effect.flatMap(HttpServerRequest.HttpServerRequest, (request) =>
-    Effect.fromResult(negotiate(kind, request.headers[names[kind]] ?? null, supports)),
+    Effect.fromResult(negotiate(kind, request.headers[names[kind]], supports)),
   )
