@@ -16,6 +16,7 @@ import * as SecureHeaders from '@totto2727/effect-http/secureHeaders'
 import { Effect, Layer, Schema } from 'effect'
 import { HttpRouter, HttpServerResponse } from 'effect/http'
 
+const BrowserPolicy = HttpRouter.middleware((app) => app.pipe(Csrf.middleware(), SecureHeaders.middleware())).layer
 const Routes = HttpRouter.addAll([
   HttpRouter.route(
     'GET',
@@ -31,12 +32,9 @@ const Routes = HttpRouter.addAll([
       return HttpServerResponse.text(body)
     }).pipe(CacheControl.middleware({ noStore: true })),
   ),
-])
-const BrowserPolicy = HttpRouter.middleware((app) => app.pipe(Csrf.middleware(), SecureHeaders.middleware()), {
-  global: true,
-})
+]).pipe(Layer.provide(BrowserPolicy))
 
-HttpRouter.serve(Layer.mergeAll(Routes, BrowserPolicy)).pipe(
+HttpRouter.serve(Routes).pipe(
   Layer.provide(NodeHttpServer.layer(createServer, { host: '127.0.0.1', port: 3000 })),
   Layer.launch,
   NodeRuntime.runMain,
@@ -78,7 +76,8 @@ Import the module you need from its subpath. The package has no root export.
 
 ## API
 
-Each example shows one common use in an existing Effect HTTP application.
+Each example defines routes with `HttpRouter.route` and registers them with `HttpRouter.addAll`.
+Apply a policy to a handler with `pipe`, or to a route group with `Layer.provide(middleware.layer)`.
 `listProducts` and `updateProfile` stand for your application's Effect handlers, which load products or update a profile and return an HTTP response.
 Register the resulting `Routes` layer with your server.
 
@@ -130,20 +129,18 @@ const Routes = HttpRouter.addAll([HttpRouter.route('GET', '/products', listProdu
 ### `conditionalRequest`
 
 Generate an ETag and return `304` when the client's `If-None-Match` matches.
-The caller provides the digest service; streamed bodies are not buffered.
+The caller provides the digest service when composing the routes; streamed bodies are not buffered.
 
 ```ts
 import * as ConditionalRequest from '@totto2727/effect-http/conditionalRequest'
-import { Effect, Layer } from 'effect'
 import { Digest } from 'effect/crypto'
 import { HttpRouter } from 'effect/http'
 
 import { listProducts } from './products.ts'
 
-const Policy = HttpRouter.middleware((app) =>
-  app.pipe(ConditionalRequest.middleware({ maxBodyBytes: 4096 }), Effect.provide(Digest.layerWebCrypto)),
-).layer
-const Routes = HttpRouter.addAll([HttpRouter.route('GET', '/products', listProducts)]).pipe(Layer.provide(Policy))
+const Routes = HttpRouter.addAll([
+  HttpRouter.route('GET', '/products', listProducts.pipe(ConditionalRequest.middleware({ maxBodyBytes: 4096 }))),
+]).pipe(HttpRouter.provideRequest(Digest.layerWebCrypto))
 ```
 
 ### `csrf`
@@ -158,10 +155,8 @@ import { HttpRouter } from 'effect/http'
 
 import { updateProfile } from './profile.ts'
 
-const Routes = Layer.mergeAll(
-  HttpRouter.addAll([HttpRouter.route('POST', '/profile', updateProfile)]),
-  HttpRouter.middleware(Csrf.middleware(), { global: true }),
-)
+const Policy = HttpRouter.middleware(Csrf.middleware()).layer
+const Routes = HttpRouter.addAll([HttpRouter.route('POST', '/profile', updateProfile)]).pipe(Layer.provide(Policy))
 ```
 
 ### `responseCache`
@@ -200,10 +195,8 @@ import { HttpRouter } from 'effect/http'
 
 import { listProducts } from './products.ts'
 
-const Routes = Layer.mergeAll(
-  HttpRouter.addAll([HttpRouter.route('GET', '/products', listProducts)]),
-  HttpRouter.middleware(SecureHeaders.middleware(), { global: true }),
-)
+const Policy = HttpRouter.middleware(SecureHeaders.middleware()).layer
+const Routes = HttpRouter.addAll([HttpRouter.route('GET', '/products', listProducts)]).pipe(Layer.provide(Policy))
 ```
 
 ## Development
