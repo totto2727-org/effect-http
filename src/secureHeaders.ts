@@ -67,6 +67,10 @@ const HstsFields = Schema.Struct({
 
 const decodeCspDirective = Schema.decodeUnknownOption(CspDirectiveName)
 const decodeCspToken = Schema.decodeUnknownOption(CspToken)
+const decodeFrameOptions = Schema.decodeUnknownOption(FrameOptions)
+const decodeReferrerPolicy = Schema.decodeUnknownOption(ReferrerPolicy)
+const decodeCrossOriginOpenerPolicy = Schema.decodeUnknownOption(CrossOriginOpenerPolicy)
+const decodeCrossOriginResourcePolicy = Schema.decodeUnknownOption(CrossOriginResourcePolicy)
 const decodeHsts = Schema.decodeUnknownOption(HstsFields)
 
 const formatCspDirective = (name: CspDirective, values: readonly (typeof CspToken.Type)[]): string => {
@@ -115,17 +119,17 @@ const header = (
 export const headers = (config: Config = {}): Readonly<Record<string, string>> => {
   const policies: readonly Option.Option<Header>[] = [
     Option.some(['x-content-type-options', 'nosniff']),
-    header('x-frame-options', config.frameOptions ?? 'DENY', Schema.decodeUnknownOption(FrameOptions)),
-    header('referrer-policy', config.referrerPolicy ?? 'no-referrer', Schema.decodeUnknownOption(ReferrerPolicy)),
+    header('x-frame-options', config.frameOptions ?? 'DENY', decodeFrameOptions),
+    header('referrer-policy', config.referrerPolicy ?? 'no-referrer', decodeReferrerPolicy),
     header(
       'cross-origin-opener-policy',
       config.crossOriginOpenerPolicy ?? 'same-origin',
-      Schema.decodeUnknownOption(CrossOriginOpenerPolicy),
+      decodeCrossOriginOpenerPolicy,
     ),
     header(
       'cross-origin-resource-policy',
       config.crossOriginResourcePolicy ?? 'same-origin',
-      Schema.decodeUnknownOption(CrossOriginResourcePolicy),
+      decodeCrossOriginResourcePolicy,
     ),
     Option.map(Option.fromNullishOr(config.hsts), ({ maxAge, includeSubDomains, preload }) => {
       const policy = decodeHsts({ maxAge, includeSubDomains, preload })
