@@ -4,13 +4,48 @@ HTTP content negotiation, cache policies, conditional requests, and security mid
 
 ## Usage
 
-Format a Cache-Control policy:
+Start a Node.js server with a cache policy for public reads, CSRF protection for writes, and security headers for both:
 
 ```ts
-import * as CacheControl from '@totto2727/effect-http/cacheControl'
+import { createServer } from 'node:http'
 
-CacheControl.format({ public: true, maxAge: 30 }) // public, max-age=30
+import { NodeHttpServer, NodeRuntime } from '@effect/platform-node'
+import * as CacheControl from '@totto2727/effect-http/cacheControl'
+import * as Csrf from '@totto2727/effect-http/csrf'
+import * as SecureHeaders from '@totto2727/effect-http/secureHeaders'
+import { Effect, Layer, Schema } from 'effect'
+import { HttpRouter, HttpServerResponse } from 'effect/http'
+
+const Routes = HttpRouter.addAll([
+  HttpRouter.route(
+    'GET',
+    '/greetings/:name',
+    Effect.gen(function* () {
+      const { name } = yield* HttpRouter.schemaPathParams(Schema.Struct({ name: Schema.String }))
+      return yield* HttpServerResponse.json({ greeting: `Hello, ${name}` })
+    }).pipe(CacheControl.middleware({ public: true, maxAge: 30 })),
+  ),
+  HttpRouter.route('POST', '/echo', (request) =>
+    Effect.gen(function* () {
+      const body = yield* request.text
+      return HttpServerResponse.text(body)
+    }).pipe(CacheControl.middleware({ noStore: true })),
+  ),
+])
+const BrowserPolicy = HttpRouter.middleware((app) => app.pipe(Csrf.middleware(), SecureHeaders.middleware()), {
+  global: true,
+})
+
+HttpRouter.serve(Layer.mergeAll(Routes, BrowserPolicy)).pipe(
+  Layer.provide(NodeHttpServer.layer(createServer, { host: '127.0.0.1', port: 3000 })),
+  Layer.launch,
+  NodeRuntime.runMain,
+)
 ```
+
+`GET /greetings/Ada` returns `{"greeting":"Hello, Ada"}` with `Cache-Control: public, max-age=30`.
+Same-origin `POST /echo` returns its request body; untrusted cross-site writes receive `403`.
+`SecureHeaders` wraps `Csrf`, so rejected writes also receive security headers.
 
 ## Key features
 
@@ -33,6 +68,12 @@ Install the library and its peer dependency from npm:
 vp add @totto2727/effect-http effect@^4.1.4
 ```
 
+For the Node.js server in Usage, also install the runtime adapter:
+
+```bash
+vp add @effect/platform-node@^4.1.4
+```
+
 Import the module you need from its subpath. The package has no root export.
 
 ## API
@@ -48,29 +89,26 @@ Return `406` when no format matches and `400` for malformed syntax.
 
 ```ts
 import * as Accepts from '@totto2727/effect-http/accepts'
-import { Effect, Option } from 'effect'
+import { Effect, Layer, Option } from 'effect'
 import { HttpRouter, HttpServerResponse } from 'effect/http'
 
 import { listProducts } from './products.ts'
 
-const Routes = HttpRouter.addAll([
-  HttpRouter.route(
-    'GET',
-    '/products',
-    Accepts.negotiateEffect('mediaType', ['application/json']).pipe(
-      Effect.flatMap(
-        Option.match({
-          onNone: () => HttpServerResponse.json({ error: 'Not acceptable' }, { status: 406 }),
-          onSome: () => listProducts,
-        }),
-      ),
-      Effect.catchTag('AcceptsParseError', () =>
-        HttpServerResponse.json({ error: 'Invalid Accept header' }, { status: 400 }),
-      ),
-      Effect.map(HttpServerResponse.setHeader('vary', 'accept')),
+const AcceptJson = HttpRouter.middleware((app) =>
+  Effect.gen(function* () {
+    const selected = yield* Accepts.negotiateEffect('mediaType', ['application/json'])
+    if (Option.isNone(selected)) {
+      return yield* HttpServerResponse.json({ error: 'Not acceptable' }, { status: 406 })
+    }
+    return yield* app
+  }).pipe(
+    Effect.catchTag('AcceptsParseError', () =>
+      HttpServerResponse.json({ error: 'Invalid Accept header' }, { status: 400 }),
     ),
+    Effect.map(HttpServerResponse.setHeader('vary', 'accept')),
   ),
-])
+).layer
+const Routes = HttpRouter.addAll([HttpRouter.route('GET', '/products', listProducts)]).pipe(Layer.provide(AcceptJson))
 ```
 
 ### `cacheControl`
