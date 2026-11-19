@@ -77,7 +77,7 @@ Import the module you need from its subpath. The package has no root export.
 ## API
 
 Each example defines routes with `HttpRouter.route` and registers them with `HttpRouter.addAll`.
-Apply a policy to a handler with `pipe`, or to a route group with `Layer.provide(middleware.layer)`.
+Apply middleware directly to a single handler with `pipe`. Use a middleware layer to share a policy across several routes, as in Usage.
 `listProducts` and `updateProfile` stand for your application's Effect handlers, which load products or update a profile and return an HTTP response.
 Register the resulting `Routes` layer with your server. The `conditionalRequest` example includes startup to show where to provide its digest dependency.
 
@@ -88,26 +88,24 @@ Return `406` when no format matches and `400` for malformed syntax.
 
 ```ts
 import * as Accepts from '@totto2727/effect-http/accepts'
-import { Effect, Layer, Option } from 'effect'
+import { Effect, Option, Result } from 'effect'
 import { HttpRouter, HttpServerResponse } from 'effect/http'
 
 import { listProducts } from './products.ts'
 
-const AcceptJson = HttpRouter.middleware((app) =>
+const acceptJson = <E, R>(app: Effect.Effect<HttpServerResponse.HttpServerResponse, E, R>) =>
   Effect.gen(function* () {
-    const selected = yield* Accepts.negotiateEffect('mediaType', ['application/json'])
-    if (Option.isNone(selected)) {
+    const negotiated = yield* Effect.result(Accepts.negotiateEffect('mediaType', ['application/json']))
+    if (Result.isFailure(negotiated)) {
+      return yield* HttpServerResponse.json({ error: 'Invalid Accept header' }, { status: 400 })
+    }
+    if (Option.isNone(negotiated.success)) {
       return yield* HttpServerResponse.json({ error: 'Not acceptable' }, { status: 406 })
     }
     return yield* app
-  }).pipe(
-    Effect.catchTag('AcceptsParseError', () =>
-      HttpServerResponse.json({ error: 'Invalid Accept header' }, { status: 400 }),
-    ),
-    Effect.map(HttpServerResponse.setHeader('vary', 'accept')),
-  ),
-).layer
-const Routes = HttpRouter.addAll([HttpRouter.route('GET', '/products', listProducts)]).pipe(Layer.provide(AcceptJson))
+  }).pipe(Effect.map(HttpServerResponse.setHeader('vary', 'accept')))
+
+const Routes = HttpRouter.addAll([HttpRouter.route('GET', '/products', listProducts.pipe(acceptJson))])
 ```
 
 ### `cacheControl`
@@ -117,13 +115,13 @@ This sets the header; it does not store responses on the server.
 
 ```ts
 import * as CacheControl from '@totto2727/effect-http/cacheControl'
-import { Layer } from 'effect'
 import { HttpRouter } from 'effect/http'
 
 import { listProducts } from './products.ts'
 
-const Policy = HttpRouter.middleware(CacheControl.middleware({ public: true, maxAge: 30 })).layer
-const Routes = HttpRouter.addAll([HttpRouter.route('GET', '/products', listProducts)]).pipe(Layer.provide(Policy))
+const Routes = HttpRouter.addAll([
+  HttpRouter.route('GET', '/products', listProducts.pipe(CacheControl.middleware({ public: true, maxAge: 30 }))),
+])
 ```
 
 ### `conditionalRequest`
@@ -161,30 +159,28 @@ Use this in addition to authentication and authorization.
 
 ```ts
 import * as Csrf from '@totto2727/effect-http/csrf'
-import { Layer } from 'effect'
 import { HttpRouter } from 'effect/http'
 
 import { updateProfile } from './profile.ts'
 
-const Policy = HttpRouter.middleware(Csrf.middleware()).layer
-const Routes = HttpRouter.addAll([HttpRouter.route('POST', '/profile', updateProfile)]).pipe(Layer.provide(Policy))
+const Routes = HttpRouter.addAll([HttpRouter.route('POST', '/profile', updateProfile.pipe(Csrf.middleware()))])
 ```
 
 ### `responseCache`
 
 Cache public GET responses in memory.
-The middleware layer creates one cache at startup and shares it across requests.
+Route registration creates one cache at startup and shares it across requests.
 The route must mark its responses public; declare any varying request headers in `vary`.
 
 ```ts
 import * as CacheControl from '@totto2727/effect-http/cacheControl'
 import * as ResponseCache from '@totto2727/effect-http/responseCache'
-import { Effect, Layer } from 'effect'
+import { Effect } from 'effect'
 import { HttpRouter } from 'effect/http'
 
 import { listProducts } from './products.ts'
 
-const Policy = Layer.unwrap(
+const Routes = HttpRouter.addAll(
   Effect.gen(function* () {
     const cache = yield* ResponseCache.make({
       publicRoute: true,
@@ -193,12 +189,10 @@ const Policy = Layer.unwrap(
       maxBodyBytes: 4096,
       vary: [],
     })
-    return HttpRouter.middleware((app) =>
-      app.pipe(CacheControl.middleware({ public: true, maxAge: 30 }), cache.middleware),
-    ).layer
+    const cachedProducts = listProducts.pipe(CacheControl.middleware({ public: true, maxAge: 30 }), cache.middleware)
+    return [HttpRouter.route('GET', '/products', cachedProducts)]
   }),
 )
-const Routes = HttpRouter.addAll([HttpRouter.route('GET', '/products', listProducts)]).pipe(Layer.provide(Policy))
 ```
 
 Only use this for responses independent of user identity.
@@ -210,13 +204,11 @@ Apply the default security headers to your routes and remove `X-Powered-By`.
 
 ```ts
 import * as SecureHeaders from '@totto2727/effect-http/secureHeaders'
-import { Layer } from 'effect'
 import { HttpRouter } from 'effect/http'
 
 import { listProducts } from './products.ts'
 
-const Policy = HttpRouter.middleware(SecureHeaders.middleware()).layer
-const Routes = HttpRouter.addAll([HttpRouter.route('GET', '/products', listProducts)]).pipe(Layer.provide(Policy))
+const Routes = HttpRouter.addAll([HttpRouter.route('GET', '/products', listProducts.pipe(SecureHeaders.middleware()))])
 ```
 
 ## Development
