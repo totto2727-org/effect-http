@@ -1,11 +1,6 @@
 import { Data, DateTime, Effect, FileSystem, Layer, Option, Stream, String } from 'effect'
-import * as Digest from 'effect/crypto/Digest'
-import type * as Etag from 'effect/http/Etag'
-import * as Headers from 'effect/http/Headers'
-import * as HttpEffect from 'effect/http/HttpEffect'
-import * as HttpMiddleware from 'effect/http/HttpMiddleware'
-import * as HttpPlatform from 'effect/http/HttpPlatform'
-import * as HttpServerResponse from 'effect/http/HttpServerResponse'
+import { Digest } from 'effect/crypto'
+import { type Etag, Headers, HttpEffect, HttpMiddleware, HttpPlatform, HttpServerResponse } from 'effect/http'
 import { describe, expect, expectTypeOf, it } from 'vite-plus/test'
 
 import * as ConditionalRequest from './conditionalRequest.ts'

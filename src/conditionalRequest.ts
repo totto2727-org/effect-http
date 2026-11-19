@@ -1,10 +1,6 @@
 import { Array, Data, DateTime, Effect, Option, Predicate, Schema, String } from 'effect'
-import * as Digest from 'effect/crypto/Digest'
-import * as Etag from 'effect/http/Etag'
-import * as Headers from 'effect/http/Headers'
-import * as HttpEffect from 'effect/http/HttpEffect'
-import * as HttpServerRequest from 'effect/http/HttpServerRequest'
-import * as HttpServerResponse from 'effect/http/HttpServerResponse'
+import { Digest } from 'effect/crypto'
+import { Etag, Headers, HttpEffect, HttpServerRequest, HttpServerResponse } from 'effect/http'
 
 import * as HttpDate from './internal/httpDate.ts'
 

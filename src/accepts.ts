@@ -12,7 +12,7 @@ import {
   String,
   pipe,
 } from 'effect'
-import * as HttpServerRequest from 'effect/http/HttpServerRequest'
+import { HttpServerRequest } from 'effect/http'
 
 /** The four independent HTTP preference grammars. */
 export type Kind = 'mediaType' | 'language' | 'encoding' | 'charset'

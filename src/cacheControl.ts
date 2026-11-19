@@ -1,5 +1,5 @@
 import { Array, Data, Effect, Option, Predicate, Record, Result, Schema, String } from 'effect'
-import * as HttpServerResponse from 'effect/http/HttpServerResponse'
+import { HttpServerResponse } from 'effect/http'
 
 export interface Directives {
   readonly public?: boolean

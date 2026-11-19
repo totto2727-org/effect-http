@@ -1,5 +1,5 @@
 import { DateTime, Effect, Option, Result, Schema, SchemaGetter, SchemaIssue } from 'effect'
-import * as Headers from 'effect/http/Headers'
+import { Headers } from 'effect/http'
 
 const CanonicalHttpDate = Schema.DateTimeUtc.check(
   Schema.makeFilter((date) => DateTime.getPartUtc(date, 'year') >= 100, {
