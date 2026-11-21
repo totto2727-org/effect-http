@@ -1,7 +1,5 @@
 import { Clock, Deferred, Effect, Exit, Fiber, Result, Stream } from 'effect'
-import * as HttpEffect from 'effect/http/HttpEffect'
-import * as HttpServerRequest from 'effect/http/HttpServerRequest'
-import * as HttpServerResponse from 'effect/http/HttpServerResponse'
+import { HttpEffect, HttpServerRequest, HttpServerResponse } from 'effect/http'
 import { describe, expect, it } from 'vite-plus/test'
 
 import * as ResponseCache from './responseCache.ts'

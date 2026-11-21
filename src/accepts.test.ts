@@ -1,7 +1,5 @@
 import { Array as Arr, Effect, Option, Result, String as Str } from 'effect'
-import * as HttpEffect from 'effect/http/HttpEffect'
-import * as HttpServerRequest from 'effect/http/HttpServerRequest'
-import * as HttpServerResponse from 'effect/http/HttpServerResponse'
+import { HttpEffect, HttpServerRequest, HttpServerResponse } from 'effect/http'
 import { describe, expect, expectTypeOf, it } from 'vite-plus/test'
 
 import * as Accepts from './accepts.ts'

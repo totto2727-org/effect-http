@@ -1,6 +1,5 @@
 import { Array, Effect, Result, String } from 'effect'
-import * as HttpEffect from 'effect/http/HttpEffect'
-import * as HttpServerResponse from 'effect/http/HttpServerResponse'
+import { HttpEffect, HttpServerResponse } from 'effect/http'
 import { describe, expect, expectTypeOf, it } from 'vite-plus/test'
 
 import * as CacheControl from './cacheControl.ts'

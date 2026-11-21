@@ -1,13 +1,18 @@
 import { DateTime, Effect, Option, Result, Schema, SchemaGetter, SchemaIssue } from 'effect'
-import * as Headers from 'effect/http/Headers'
+import { Headers } from 'effect/http'
+
+const minimumHttpYear = 100
+const canonicalHttpDateLength = 29
 
 const CanonicalHttpDate = Schema.DateTimeUtc.check(
-  Schema.makeFilter((date) => DateTime.getPartUtc(date, 'year') >= 100, {
+  Schema.makeFilter((date) => DateTime.getPartUtc(date, 'year') >= minimumHttpYear, {
     expected: 'an HTTP date with year 0100 or later',
   }),
 ).pipe(Schema.brand('CanonicalHttpDate'))
 
-const HttpDateFromHeader = Schema.String.check(Schema.isBetweenLength(29, 29)).pipe(
+const HttpDateFromHeader = Schema.String.check(
+  Schema.isBetweenLength(canonicalHttpDateLength, canonicalHttpDateLength),
+).pipe(
   Schema.decodeTo(CanonicalHttpDate, {
     decode: SchemaGetter.transformEffect((value, options) => {
       const date = Result.getSuccess(Headers.parseHttpDate(value))
@@ -19,7 +24,7 @@ const HttpDateFromHeader = Schema.String.check(Schema.isBetweenLength(29, 29)).p
   }),
 )
 
-/** Accept only the canonical IMF-fixdate form, including the correct weekday. */
-export const parse = (value: string): Option.Option<typeof CanonicalHttpDate.Type> => decodeHttpDate(value)
-
 const decodeHttpDate = Schema.decodeUnknownOption(HttpDateFromHeader)
+
+// Accept only the canonical IMF-fixdate form, including the correct weekday.
+export const parse = (value: string): Option.Option<typeof CanonicalHttpDate.Type> => decodeHttpDate(value)

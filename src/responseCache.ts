@@ -18,9 +18,7 @@ import {
   String,
   pipe,
 } from 'effect'
-import * as Cookies from 'effect/http/Cookies'
-import * as HttpServerRequest from 'effect/http/HttpServerRequest'
-import * as HttpServerResponse from 'effect/http/HttpServerResponse'
+import { Cookies, HttpServerRequest, HttpServerResponse } from 'effect/http'
 
 import * as CacheControl from './cacheControl.ts'
 import * as HttpDate from './internal/httpDate.ts'

@@ -1,11 +1,15 @@
+// oxlint-disable-next-line rules/no-node-imports -- Vite+ runs this configuration on Node.
+import { URL } from 'node:url'
+
 import { generateIgnorePatterns } from '@totto2727/gitignore-patterns'
+import preset from '@totto2727/oxlint/preset/library'
 import { defineConfig } from 'vite-plus'
 
 const ignorePatterns = await generateIgnorePatterns(new URL('.', import.meta.url))
 
+// oxlint-disable-next-line import/no-default-export -- Vite+ loads its configuration from the default export.
 export default defineConfig({
   fmt: {
-    ignorePatterns,
     arrowParens: 'always',
     experimentalSortImports: {
       ignoreCase: true,
@@ -13,6 +17,7 @@ export default defineConfig({
       order: 'asc',
     },
     experimentalSortPackageJson: true,
+    ignorePatterns,
     jsxSingleQuote: true,
     printWidth: 120,
     proseWrap: 'preserve',
@@ -20,28 +25,32 @@ export default defineConfig({
     singleQuote: true,
   },
   lint: {
+    ...preset,
+    globals: { FormData: 'readonly', Request: 'readonly' },
     ignorePatterns,
-    options: { typeAware: true, typeCheck: true },
+    options: { ...preset.options, typeCheck: true },
     overrides: [
+      ...(preset.overrides ?? []),
       {
         files: ['src/**/*.ts'],
         rules: {
           'no-restricted-globals': [
             'error',
-            { name: 'Error', message: 'Define custom errors with Effect Data.TaggedError.' },
-            { name: 'TypeError', message: 'Define configuration errors with Effect Data.TaggedError.' },
-            { name: 'Map', message: 'Use Effect HashMap for keyed state.' },
-            { name: 'Set', message: 'Use Effect HashSet for unique values.' },
+            { message: 'Define custom errors with Effect Data.TaggedError.', name: 'Error' },
+            { message: 'Define configuration errors with Effect Data.TaggedError.', name: 'TypeError' },
+            { message: 'Use Effect HashMap for keyed state.', name: 'Map' },
+            { message: 'Use Effect HashSet for unique values.', name: 'Set' },
           ],
           'no-restricted-properties': [
             'error',
-            { object: 'Object', property: 'entries', message: 'Use Effect Record.toEntries.' },
-            { object: 'Object', property: 'fromEntries', message: 'Use Effect Record.fromEntries.' },
-            { object: 'Object', property: 'keys', message: 'Use Effect Record.keys.' },
-            { object: 'Object', property: 'create', message: 'Use Effect Record.empty or tagged constructors.' },
-            { object: 'JSON', property: 'parse', message: 'Decode JSON with Effect Schema.' },
-            { object: 'JSON', property: 'stringify', message: 'Encode JSON with Effect Schema.' },
+            { message: 'Use Effect Record.toEntries.', object: 'Object', property: 'entries' },
+            { message: 'Use Effect Record.fromEntries.', object: 'Object', property: 'fromEntries' },
+            { message: 'Use Effect Record.keys.', object: 'Object', property: 'keys' },
+            { message: 'Use Effect Record.empty or tagged constructors.', object: 'Object', property: 'create' },
+            { message: 'Decode JSON with Effect Schema.', object: 'JSON', property: 'parse' },
+            { message: 'Encode JSON with Effect Schema.', object: 'JSON', property: 'stringify' },
           ],
+          'unicorn/filename-case': ['error', { case: 'camelCase' }],
         },
       },
       {
@@ -50,8 +59,9 @@ export default defineConfig({
       },
     ],
   },
-  test: { include: ['src/**/*.test.ts'] },
   pack: {
+    clean: true,
+    dts: true,
     entry: [
       'src/accepts.ts',
       'src/cacheControl.ts',
@@ -62,17 +72,15 @@ export default defineConfig({
     ],
     format: ['esm'],
     platform: 'neutral',
-    dts: true,
-    clean: true,
   },
   run: {
     tasks: {
       build: {
-        command: 'vp pack',
         cache: {
           input: [{ auto: true }, '!dist/**'],
           output: ['dist/**'],
         },
+        command: 'vp pack',
       },
       check: {
         command: 'vp check',
@@ -89,4 +97,5 @@ export default defineConfig({
       },
     },
   },
+  test: { include: ['src/**/*.test.ts'] },
 })
