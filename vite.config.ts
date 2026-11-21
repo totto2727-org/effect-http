@@ -50,6 +50,7 @@ export default defineConfig({
             { message: 'Decode JSON with Effect Schema.', object: 'JSON', property: 'parse' },
             { message: 'Encode JSON with Effect Schema.', object: 'JSON', property: 'stringify' },
           ],
+          'unicorn/filename-case': ['error', { case: 'camelCase' }],
         },
       },
       {
