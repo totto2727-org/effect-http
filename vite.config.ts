@@ -1,3 +1,5 @@
+import { fileURLToPath } from 'node:url'
+
 import { generateIgnorePatterns } from '@totto2727/gitignore-patterns'
 import { defineConfig } from 'vite-plus'
 
@@ -21,6 +23,7 @@ export default defineConfig({
   },
   lint: {
     ignorePatterns,
+    jsPlugins: [fileURLToPath(import.meta.resolve('@totto2727/oxlint'))],
     options: { typeAware: true, typeCheck: true },
     overrides: [
       {
@@ -49,6 +52,12 @@ export default defineConfig({
         rules: { 'no-restricted-globals': 'off', 'no-restricted-properties': 'off' },
       },
     ],
+    rules: {
+      'rules/no-eslint-disable-comments': 'error',
+      'rules/no-jsx-script-tag': 'error',
+      'rules/require-disable-reason': 'error',
+      'rules/require-import-extension': 'error',
+    },
   },
   test: { include: ['src/**/*.test.ts'] },
   pack: {
