@@ -1,173 +1,124 @@
-import {
-  Array,
-  Data,
-  Effect,
-  Iterable,
-  Option,
-  Predicate,
-  Record,
-  Result,
-  Schema,
-  SchemaGetter,
-  String,
-  pipe,
-} from 'effect'
+import { Array, Data, Effect, Iterable, Option, Predicate, Record, Result, String, pipe } from 'effect'
 import { HttpServerRequest } from 'effect/http'
+
+import type { HeaderText, ParameterKey, ParameterText, PreferenceValue, QualityValue } from './acceptsGrammar.ts'
+import {
+  decodeBoundedAscii,
+  decodeOfferList,
+  decodeParameterName,
+  decodeParameterValue,
+  decodePreferenceMembers,
+  decodePreferenceParts,
+  decodePreferenceValue,
+  decodeWireQuality,
+  fullQuality,
+  refusedQuality,
+} from './acceptsGrammar.ts'
+import { effectiveQuality } from './acceptsQuality.ts'
 
 /** The four independent HTTP preference grammars. */
 export type Kind = 'mediaType' | 'language' | 'encoding' | 'charset'
 
 export class ParseError extends Data.TaggedError('AcceptsParseError')<{
-  readonly kind: Kind
-  readonly reason: string
+  kind: Kind
+  reason: string
 }> {}
 
+/* oxlint-disable rules/no-readonly -- These exported interfaces preserve declaration merging and immutable parser results. */
 export interface Preference {
-  readonly value: typeof MediaRange.Type | typeof LanguageRange.Type | typeof CodingRange.Type
-  readonly parameters: Readonly<Record<string, typeof ParameterValue.Type>>
-  readonly quality: typeof Quality.Type
+  readonly value: PreferenceValue
+  readonly parameters: Readonly<Record<string, ParameterText>>
+  readonly quality: QualityValue
 }
 
 export interface Parsed {
   readonly kind: Kind
   readonly missing: boolean
-  readonly preferences: ReadonlyArray<Preference>
+  readonly preferences: readonly Preference[]
 }
+/* oxlint-enable rules/no-readonly */
 
 const names = {
-  mediaType: 'accept',
-  language: 'accept-language',
-  encoding: 'accept-encoding',
   charset: 'accept-charset',
+  encoding: 'accept-encoding',
+  language: 'accept-language',
+  mediaType: 'accept',
 } satisfies Record<Kind, string>
-
-const BoundedAscii = Schema.String.check(
-  Schema.isMaxLength(8192),
-  Schema.isPattern(/^[\u0020-\u007E\t]*(?![\s\S])/u),
-).pipe(Schema.brand('AcceptsBoundedAscii'))
-const tokenCharacters = "!#$%&'+.^_`|~0-9A-Za-z-"
-const concreteTokenPattern = `[${tokenCharacters}]+`
-const Token = Schema.String.check(Schema.isPattern(new RegExp(`^[*${tokenCharacters}]+$`, 'u')))
-const ParameterName = Token.pipe(Schema.brand('AcceptsParameterName'))
-const Coding = Schema.String.check(Schema.isPattern(new RegExp(`^${concreteTokenPattern}$`, 'u'))).pipe(
-  Schema.brand('AcceptsCoding'),
-)
-const Language = Schema.String.check(Schema.isPattern(/^[A-Za-z]{1,8}(?:-[A-Za-z0-9]{1,8})*$/u)).pipe(
-  Schema.brand('AcceptsLanguage'),
-)
-const MediaType = Schema.String.check(
-  Schema.isPattern(new RegExp(`^${concreteTokenPattern}/${concreteTokenPattern}$`, 'u')),
-).pipe(Schema.brand('AcceptsMediaType'))
-const MediaWildcard = Schema.String.check(Schema.isPattern(new RegExp(`^${concreteTokenPattern}/\\*$`, 'u'))).pipe(
-  Schema.brand('AcceptsMediaWildcard'),
-)
-const MediaRange = Schema.Union([MediaType, Schema.Literal('*/*'), MediaWildcard])
-const Wildcard = Schema.Literal('*')
-const LanguageRange = Schema.Union([Language, Wildcard])
-const CodingRange = Schema.Union([Coding, Wildcard])
-
-const QuotedParameter = Schema.String.check(Schema.isPattern(/^"(?:[^"\\]|\\.)*"$/u))
-const ParameterValue = BoundedAscii.pipe(Schema.brand('AcceptsParameterValue'))
-const WireParameterValue = Schema.Union([Token, QuotedParameter]).pipe(
-  Schema.decodeTo(ParameterValue, {
-    decode: SchemaGetter.transform((value) =>
-      String.startsWith('"')(value)
-        ? pipe(value, String.slice(1, -1), String.replaceAll(/\\(?<escaped>.)/gu, '$<escaped>'))
-        : value,
-    ),
-    encode: SchemaGetter.transform((value) => `"${String.replaceAll(/["\\]/gu, '\\$&')(value)}"`),
-  }),
-)
-const Quality = Schema.Number.check(Schema.isBetween({ minimum: 0, maximum: 1 })).pipe(Schema.brand('AcceptsQuality'))
-const WireQuality = Schema.String.check(Schema.isPattern(/^(?:0(?:\.[0-9]{0,3})?|1(?:\.0{0,3})?)$/u)).pipe(
-  Schema.decodeTo(Schema.NumberFromString),
-  Schema.decodeTo(Quality),
-)
-const decodeQuality = Schema.decodeUnknownOption(Quality)
-const fullQuality = Option.getOrThrow(decodeQuality(1))
-const refusedQuality = Option.getOrThrow(decodeQuality(0))
-
-const PreferenceParts = Schema.NonEmptyArray(Schema.String).check(Schema.isMaxLength(129))
-const PreferenceMembers = Schema.Array(BoundedAscii).check(Schema.isMaxLength(128))
-// Check the length without visiting entries before parsing offers in server order.
-const OfferList = Schema.declare<ReadonlyArray<unknown>>(Array.isArray).check(Schema.isMaxLength(128))
-
-const decodeBoundedAscii = Schema.decodeUnknownOption(BoundedAscii)
-const decodeParameterName = Schema.decodeUnknownOption(ParameterName)
-const decodeParameterValue = Schema.decodeUnknownOption(WireParameterValue)
-const decodeWireQuality = Schema.decodeUnknownOption(WireQuality)
-const decodePreferenceParts = Schema.decodeUnknownOption(PreferenceParts)
-const decodePreferenceMembers = Schema.decodeUnknownOption(PreferenceMembers)
-const decodeOfferList = Schema.decodeUnknownOption(OfferList)
-
-const decodeMediaType = Schema.decodeUnknownOption(MediaType)
-const decodeMediaRange = Schema.decodeUnknownOption(MediaRange)
-const decodeLanguage = Schema.decodeUnknownOption(Language)
-const decodeLanguageRange = Schema.decodeUnknownOption(LanguageRange)
-const decodeCoding = Schema.decodeUnknownOption(Coding)
-const decodeCodingRange = Schema.decodeUnknownOption(CodingRange)
-
-const preferenceDecoders = {
-  charset: { offer: decodeCoding, range: decodeCodingRange },
-  encoding: { offer: decodeCoding, range: decodeCodingRange },
-  language: { offer: decodeLanguage, range: decodeLanguageRange },
-  mediaType: { offer: decodeMediaType, range: decodeMediaRange },
-} satisfies Record<Kind, unknown>
 
 const invalid = (kind: Kind, reason: string): Result.Result<never, ParseError> =>
   Result.fail(new ParseError({ kind, reason }))
 
+const beforeFirstCharacter = -1
+const firstCharacter = 0
+const separatorWidth = 1
+
 // Delimiters in quoted strings are data, not list or parameter separators.
-const split = (input: typeof BoundedAscii.Type, delimiter: ',' | ';'): ReadonlyArray<string> | undefined => {
+const split = (input: HeaderText, delimiter: ',' | ';'): Readonly<string[]> | undefined => {
   // The optional closing quote lets the scan report an unterminated string instead of skipping it.
   const markers = Array.fromIterable(String.matchAll(/"(?:[^"\\]|\\.)*(?<closing>")?|[;,]/gu)(input))
   if (
     Array.some(
       markers,
-      ({ 0: marker, groups }) => String.startsWith('"')(marker) && Predicate.isNullish(groups?.['closing']),
+      (match) => String.startsWith('"')(match[firstCharacter]) && Predicate.isNullish(match.groups?.['closing']),
     )
   ) {
     return undefined
   }
-  const separators = Array.filterMap(markers, ({ 0: marker, index }) =>
-    marker === delimiter && Predicate.isNotNullish(index) ? Result.succeed(index) : Result.fail(undefined),
+  const separators = Array.filterMap(markers, ({ [firstCharacter]: marker, index }) =>
+    marker === delimiter && Predicate.isNotNullish(index) ? Result.succeed(index) : Result.failVoid,
   )
-  return Array.zipWith(Array.prepend(separators, -1), Array.append(separators, input.length), (left, right) =>
-    pipe(input, String.slice(left + 1, right), String.trim),
+  return Array.zipWith(
+    Array.prepend(separators, beforeFirstCharacter),
+    Array.append(separators, input.length),
+    (left, right) => pipe(input, String.slice(left + separatorWidth, right), String.trim),
   )
 }
 
-interface Parameters {
-  readonly values: Readonly<Record<typeof ParameterName.Type, typeof ParameterValue.Type>>
-  readonly quality: Option.Option<typeof Quality.Type>
-}
+type Parameters = Readonly<{
+  quality: Option.Option<QualityValue>
+  values: Readonly<Record<ParameterKey, ParameterText>>
+}>
+type PreferenceContext = Readonly<{ kind: Kind; offered: boolean }>
 
-const parseParameter = (
-  kind: Kind,
-  offered: boolean,
+const emptyParameters: Result.Result<Parameters, ParseError> = Result.succeed({
+  quality: Option.none(),
+  values: Record.empty(),
+})
+
+const nameAndValue = (part: string): Option.Option<Readonly<{ name: ParameterKey; raw: string }>> =>
+  Option.gen(function* () {
+    const equals = yield* String.indexOf('=')(part)
+    if (equals <= firstCharacter) {
+      return yield* Option.none()
+    }
+    const name = yield* pipe(
+      part,
+      String.slice(firstCharacter, equals),
+      String.trim,
+      String.toLowerCase,
+      decodeParameterName,
+    )
+    const raw = pipe(part, String.slice(equals + separatorWidth), String.trim)
+    return { name, raw }
+  })
+
+const parseQuality = (
+  { kind, offered }: PreferenceContext,
   parameters: Parameters,
-  part: string,
+  raw: string,
 ): Result.Result<Parameters, ParseError> => {
-  const equals = String.indexOf('=')(part)
-  if (Option.isNone(equals) || equals.value < 1) {
-    return invalid(kind, 'Invalid parameter')
+  if (offered || Option.isSome(parameters.quality)) {
+    return invalid(kind, 'Invalid quality')
   }
-  const decodedName = pipe(part, String.slice(0, equals.value), String.trim, String.toLowerCase, decodeParameterName)
-  const raw = pipe(part, String.slice(equals.value + 1), String.trim)
-  if (Option.isNone(decodedName)) {
-    return invalid(kind, 'Invalid parameter')
-  }
-  const name = decodedName.value
-  if (name === 'q') {
-    if (offered || Option.isSome(parameters.quality)) {
-      return invalid(kind, 'Invalid quality')
-    }
-    const quality = decodeWireQuality(raw)
-    if (Option.isNone(quality)) {
-      return invalid(kind, 'Invalid quality')
-    }
-    return Result.succeed({ ...parameters, quality })
-  }
+  const quality = decodeWireQuality(raw)
+  return Option.isNone(quality) ? invalid(kind, 'Invalid quality') : Result.succeed({ ...parameters, quality })
+}
+
+const parseOrdinaryParameter = (
+  kind: Kind,
+  parameters: Parameters,
+  { name, raw }: Readonly<{ name: ParameterKey; raw: string }>,
+): Result.Result<Parameters, ParseError> => {
   // Accept extensions after q are deliberately rejected rather than silently ignored.
   if (kind !== 'mediaType' || Option.isSome(parameters.quality) || Record.has(parameters.values, name)) {
     return invalid(kind, 'Unsupported or duplicate parameter')
@@ -182,36 +133,52 @@ const parseParameter = (
   })
 }
 
-const parsePreference = (
-  kind: Kind,
-  input: typeof BoundedAscii.Type,
-  offered: boolean,
-): Result.Result<Preference, ParseError> => {
+const parseParameter = (
+  context: PreferenceContext,
+  parameters: Parameters,
+  part: string,
+): Result.Result<Parameters, ParseError> => {
+  const parameter = nameAndValue(part)
+  if (Option.isNone(parameter)) {
+    return invalid(context.kind, 'Invalid parameter')
+  }
+  const { name, raw } = parameter.value
+  return name === 'q'
+    ? parseQuality(context, parameters, raw)
+    : parseOrdinaryParameter(context.kind, parameters, parameter.value)
+}
+
+const parsePreference = (kind: Kind, input: HeaderText, offered: boolean): Result.Result<Preference, ParseError> => {
   const parts = decodePreferenceParts(split(input, ';'))
   if (Option.isNone(parts)) {
     return invalid(kind, 'Invalid preference value')
   }
   const [rawValue, ...rawParameters] = parts.value
-  const decoders = preferenceDecoders[kind]
-  const decode = offered ? decoders.offer : decoders.range
-  const value: Option.Option<Preference['value']> = decode(String.toLowerCase(rawValue))
+  const value = decodePreferenceValue(kind, offered, rawValue)
   if (Option.isNone(value)) {
     return invalid(kind, 'Invalid preference value')
   }
-  const initial: Result.Result<Parameters, ParseError> = Result.succeed({
-    values: Record.empty(),
-    quality: Option.none(),
-  })
+  const context = { kind, offered }
+  const parsedParameters = Array.reduce(rawParameters, emptyParameters, (state, part) =>
+    Result.flatMap(state, (parameters) => parseParameter(context, parameters, part)),
+  )
+  return Result.map(parsedParameters, ({ values, quality }) => ({
+    parameters: values,
+    quality: Option.getOrElse(quality, () => fullQuality),
+    value: value.value,
+  }))
+}
+
+const parseMembers = (kind: Kind, input: HeaderText): Result.Result<Parsed, ParseError> => {
+  const members = decodePreferenceMembers(split(input, ','))
+  if (Option.isNone(members)) {
+    return invalid(kind, 'Invalid or excessive preference list')
+  }
   return pipe(
-    rawParameters,
-    Array.reduce(initial, (state, part) =>
-      Result.flatMap(state, (parameters) => parseParameter(kind, offered, parameters, part)),
-    ),
-    Result.map(({ values, quality }) => ({
-      value: value.value,
-      parameters: values,
-      quality: Option.getOrElse(quality, () => fullQuality),
-    })),
+    members.value,
+    Iterable.map((member) => parsePreference(kind, member, false)),
+    Result.all,
+    Result.map((preferences) => ({ kind, missing: false, preferences })),
   )
 }
 
@@ -221,6 +188,9 @@ const parsePreference = (
  * still allows identity. Invalid syntax fails the entire header, never a permissive subset.
  * q must be an unquoted RFC quality with at most three decimals. Duplicate parameters,
  * empty list members, and Accept extensions after q are rejected.
+ * @param {Kind} kind - The preference grammar to apply.
+ * @param {string | null | undefined} header - The selected request field.
+ * @returns {Result.Result<Parsed, ParseError>} Validated preferences or a parsing error.
  */
 export const parse = (kind: Kind, header: string | null | undefined): Result.Result<Parsed, ParseError> => {
   if (Predicate.isNullish(header)) {
@@ -233,64 +203,7 @@ export const parse = (kind: Kind, header: string | null | undefined): Result.Res
   if (String.isEmpty(String.trim(input.value))) {
     return Result.succeed({ kind, missing: false, preferences: [] })
   }
-  const members = decodePreferenceMembers(split(input.value, ','))
-  if (Option.isNone(members)) {
-    return invalid(kind, 'Invalid or excessive preference list')
-  }
-  return pipe(
-    members.value,
-    Iterable.map((member) => parsePreference(kind, member, false)),
-    Result.all,
-    Result.map((preferences) => ({ kind, missing: false, preferences })),
-  )
-}
-
-const specificity = (kind: Kind, range: Preference, offer: Preference): number => {
-  if (kind === 'mediaType') {
-    const [type, subtype] = String.split(range.value, '/')
-    const [offeredType, offeredSubtype] = String.split(offer.value, '/')
-    if (type !== '*' && type !== offeredType) {
-      return -1
-    }
-    if (subtype !== '*' && subtype !== offeredSubtype) {
-      return -1
-    }
-    const parameters = Record.toEntries(range.parameters)
-    if (!Array.every(parameters, ([key, value]) => Option.contains(value)(Record.get(offer.parameters, key)))) {
-      return -1
-    }
-    return (type === '*' ? 0 : subtype === '*' ? 1 : 2) * 1000 + parameters.length
-  }
-  if (range.value === '*') {
-    return 0
-  }
-  if (kind === 'language') {
-    return offer.value === range.value || String.startsWith(`${range.value}-`)(offer.value)
-      ? String.split(range.value, '-').length
-      : -1
-  }
-  return range.value === offer.value ? 1 : -1
-}
-
-const effectiveQuality = (parsed: Parsed, offer: Preference): typeof Quality.Type => {
-  if (parsed.missing) {
-    return fullQuality
-  }
-  const { kind } = parsed
-  const best = Array.reduce(parsed.preferences, { rank: -1, quality: refusedQuality }, (best, range) => {
-    const rank = specificity(kind, range, offer)
-    if (rank < 0 || rank < best.rank) {
-      return best
-    }
-    if (rank === best.rank && best.quality <= range.quality) {
-      return best
-    }
-    return { rank, quality: range.quality }
-  })
-  if (kind === 'encoding' && offer.value === 'identity' && best.rank < 1) {
-    return best.rank === 0 && best.quality === 0 ? refusedQuality : fullQuality
-  }
-  return best.quality
+  return parseMembers(kind, input.value)
 }
 
 /**
@@ -304,11 +217,15 @@ const effectiveQuality = (parsed: Parsed, offer: Preference): typeof Quality.Typ
  * Equal-specificity duplicate matches use the lowest quality (fail closed).
  * Equal effective qualities use server supports order. Offers must be concrete and valid,
  * with at most 128 offers of at most 8192 characters each.
+ * @param {Kind} kind - The preference grammar to apply.
+ * @param {string | null | undefined} header - The selected request field.
+ * @param {Readonly<string[]>} supports - Server offers in preference order.
+ * @returns {Result.Result<Option.Option<string>, ParseError>} The selected original offer, an empty result, or a parsing error.
  */
 export const negotiate = (
   kind: Kind,
   header: string | null | undefined,
-  supports: ReadonlyArray<string>,
+  supports: Readonly<string[]>,
 ): Result.Result<Option.Option<string>, ParseError> =>
   Result.flatMap(parse(kind, header), (parsed) => {
     const allowedOffers = decodeOfferList(supports)
@@ -323,8 +240,8 @@ export const negotiate = (
           return invalid(kind, 'Invalid or oversized offer')
         }
         return Result.map(parsePreference(kind, input.value, true), (offer) => ({
-          supported: input.value,
           quality: effectiveQuality(parsed, offer),
+          supported: input.value,
         }))
       }),
       Result.all,
@@ -332,32 +249,49 @@ export const negotiate = (
         (offers) =>
           Array.reduce(
             offers,
-            { selected: Option.none<string>(), quality: refusedQuality },
+            { quality: refusedQuality, selected: Option.none<string>() },
             (best, { supported, quality }) =>
-              quality > best.quality ? { selected: Option.some(supported), quality } : best,
+              quality > best.quality ? { quality, selected: Option.some(supported) } : best,
           ).selected,
       ),
     )
   })
 
-/** Negotiate directly from Web Headers, without middleware. */
+/**
+ * Negotiate directly from Web Headers, without middleware.
+ * @param {Kind} kind - The preference grammar to apply.
+ * @param {Headers} headers - The request headers.
+ * @param {Readonly<string[]>} supports - Server offers in preference order.
+ * @returns {Result.Result<Option.Option<string>, ParseError>} The negotiation outcome for the request.
+ */
 export const negotiateHeaders = (
   kind: Kind,
   headers: Headers,
-  supports: ReadonlyArray<string>,
+  supports: Readonly<string[]>,
 ): Result.Result<Option.Option<string>, ParseError> => negotiate(kind, headers.get(names[kind]), supports)
 
-/** Negotiate directly from a Web Request, without reading its body. */
+/**
+ * Negotiate directly from a Web Request, without reading its body.
+ * @param {Kind} kind - The preference grammar to apply.
+ * @param {Request} request - The request whose headers are inspected.
+ * @param {Readonly<string[]>} supports - Server offers in preference order.
+ * @returns {Result.Result<Option.Option<string>, ParseError>} The negotiation outcome for the request.
+ */
 export const negotiateRequest = (
   kind: Kind,
   request: Request,
-  supports: ReadonlyArray<string>,
+  supports: Readonly<string[]>,
 ): Result.Result<Option.Option<string>, ParseError> => negotiateHeaders(kind, request.headers, supports)
 
-/** Obtain the current Effect server request, preserving explicit parse failures. */
+/**
+ * Obtain the current Effect server request, preserving explicit parse failures.
+ * @param {Kind} kind - The preference grammar to apply.
+ * @param {Readonly<string[]>} supports - Server offers in preference order.
+ * @returns {Effect.Effect<Option.Option<string>, ParseError, HttpServerRequest.HttpServerRequest>} The negotiation outcome for the request.
+ */
 export const negotiateEffect = (
   kind: Kind,
-  supports: ReadonlyArray<string>,
+  supports: Readonly<string[]>,
 ): Effect.Effect<Option.Option<string>, ParseError, HttpServerRequest.HttpServerRequest> =>
   Effect.flatMap(HttpServerRequest.HttpServerRequest, (request) =>
     Effect.fromResult(negotiate(kind, request.headers[names[kind]], supports)),
