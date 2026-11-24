@@ -214,7 +214,8 @@ const Routes = HttpRouter.addAll([HttpRouter.route('GET', '/products', listProdu
 ## Development
 
 For project structure and development commands, see [AGENTS.md](./AGENTS.md).
-See the [Hono import-path table](./docs/hono-compatibility.md) and [upstream record](./docs/upstream-differences.md) for migration details.
+Use the [Hono migration guide](https://github.com/totto2727-org/effect-http/blob/main/.agents/skills/effect-http/references/hono-to-effect/README.md) to replace each import.
+See the [compatibility table](./docs/hono-compatibility.md) and [upstream record](./docs/upstream-differences.md) for scope and comparison revisions.
 
 ## License
 

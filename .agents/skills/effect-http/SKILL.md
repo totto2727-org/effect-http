@@ -1,6 +1,6 @@
 ---
 name: effect-http
-description: Use @totto2727/effect-http to negotiate content, cache public responses, apply HTTP preconditions, or protect standalone Effect HTTP routes with CSRF and security headers.
+description: Migrate Hono import paths to Effect 4 or use @totto2727/effect-http to negotiate content, cache public responses, apply HTTP preconditions, or protect standalone Effect HTTP routes with CSRF and security headers.
 ---
 
 # Standalone HTTP policies for Effect
@@ -15,4 +15,4 @@ Choose the pure helper when the application already has headers or a response, a
 - [Compose conditional handling with compression](references/standalone-policies.md#order-and-service-ownership) and provide runtime services at startup.
 
 Leave routing and static-file service to Effect, and rendering, Flight, and Server Functions to the application framework.
-For a Hono migration, use the [import-path comparison](https://github.com/totto2727-org/effect-http/blob/2ae73837894ec60f8cadea76f9e4a9e6642ba009/docs/hono-compatibility.md) to identify the owner of each capability before selecting a replacement.
+For a Hono migration, start with the [migration guide](references/hono-to-effect/README.md) and its [complete import-path map](references/hono-to-effect/import-paths.md).
