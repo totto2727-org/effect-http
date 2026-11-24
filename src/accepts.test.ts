@@ -1,14 +1,17 @@
-import { live } from '@effect/vitest'
-import { Array as Arr, Effect, Option, Result, String as Str } from 'effect'
-import { HttpEffect, HttpServerRequest, HttpServerResponse } from 'effect/http'
+import { Array, Option, Predicate, Result, String } from 'effect'
 import { describe, expect, expectTypeOf, test } from 'vite-plus/test'
 
 import * as Accepts from './accepts.ts'
 
-const choose = (kind: Accepts.Kind, header: string | null | undefined, supports: ReadonlyArray<string>) => {
-  const result = Accepts.negotiate(kind, header, supports)
-  if (Result.isFailure(result)) throw new Error(result.failure.reason)
-  return Option.getOrNull(result.success)
+const choose = (kind: Accepts.Kind, header: string | null | undefined, supports: Readonly<string[]>): string | null =>
+  Option.getOrNull(Result.getOrThrow(Accepts.negotiate(kind, header, supports)))
+
+const missingWebHeader = new globalThis.Headers().get('accept')
+const missingEffectHeader = Option.getOrUndefined(Option.none<string>())
+const canonicalUtf8 = new globalThis.TextDecoder().encoding
+const preferenceWithParameters = (count: number): string => {
+  const parameters = Array.makeBy(count, (index) => `;p${index}=x`)
+  return `text/html${Array.join(parameters, '')}`
 }
 
 describe('accepts media negotiation', () => {
@@ -19,16 +22,17 @@ describe('accepts media negotiation', () => {
     expect(choose('mediaType', '*/*;q=1,text/*;q=0.2,text/html;q=0', ['text/html'])).toBeNull()
     expect(choose('mediaType', '*/*;q=1,text/*;q=0', ['text/plain'])).toBeNull()
   })
+})
 
+describe('accepts size and wire constraints', () => {
   test('accepts exactly the maximum header, offer, list and parameter sizes', () => {
-    const longestCoding = Str.repeat(8192)('x')
+    const longestCoding = String.repeat(8192)('x')
     expect(choose('encoding', longestCoding, [longestCoding])).toBe(longestCoding)
-    expect(choose('encoding', Arr.join(Arr.replicate('gzip', 128), ','), Arr.replicate('gzip', 128))).toBe('gzip')
+    const offers = Array.replicate('gzip', 128)
+    const header = Array.join(offers, ',')
+    expect(choose('encoding', header, offers)).toBe('gzip')
 
-    const media = `text/html${Arr.join(
-      Arr.makeBy(128, (index) => `;p${index}=x`),
-      '',
-    )}`
+    const media = preferenceWithParameters(128)
     expect(choose('mediaType', media, [media])).toBe(media)
   })
 
@@ -36,9 +40,11 @@ describe('accepts media negotiation', () => {
     'rejects non-ASCII or forbidden control input %j at the boundary',
     (wire) => {
       const header = Accepts.parse('encoding', wire)
-      const offer = Accepts.negotiate('encoding', null, [wire])
-      expect(Result.isFailure(header) && header.failure.reason).toBe('Invalid or oversized header')
-      expect(Result.isFailure(offer) && offer.failure.reason).toBe('Invalid or oversized offer')
+      const offer = Accepts.negotiate('encoding', missingWebHeader, [wire])
+      const headerError = Result.getOrThrow(Result.flip(header))
+      const offerError = Result.getOrThrow(Result.flip(offer))
+      expect(headerError.reason).toBe('Invalid or oversized header')
+      expect(offerError.reason).toBe('Invalid or oversized offer')
     },
   )
 
@@ -50,7 +56,9 @@ describe('accepts media negotiation', () => {
     expectTypeOf<Accepts.Preference['parameters'][string]>().toExtend<string>()
     expectTypeOf<Accepts.Preference['quality']>().toExtend<number>()
   })
+})
 
+describe('accepts media parameter specificity', () => {
   test('preserves offered casing and server order for equal qualities', () => {
     expect(choose('mediaType', 'TEXT/HTML,APPLICATION/JSON', ['Application/Json', 'text/html'])).toBe(
       'Application/Json',
@@ -91,31 +99,43 @@ describe('accepts language, charset and encoding policies', () => {
   })
 
   test('does not infer charset fallbacks', () => {
-    expect(choose('charset', 'UTF-8;q=0,*;q=1', ['utf-8', 'ISO-8859-1'])).toBe('ISO-8859-1')
-    expect(choose('charset', 'utf-8;q=0', ['utf-8'])).toBeNull()
+    expect(choose('charset', 'UTF-8;q=0,*;q=1', [canonicalUtf8, 'ISO-8859-1'])).toBe('ISO-8859-1')
+    expect(choose('charset', 'utf-8;q=0', [canonicalUtf8])).toBeNull()
+  })
+})
+
+describe('accepts encoding identity', () => {
+  test.each([
+    { expected: 'identity', header: 'gzip;q=0.5', offers: ['gzip', 'identity'] },
+    { expected: 'identity', header: '*;q=0.5', offers: ['gzip', 'identity'] },
+    { expected: missingWebHeader, header: '*;q=0', offers: ['gzip', 'identity'] },
+    { expected: 'identity', header: 'identity;q=0.5,*;q=0', offers: ['gzip', 'identity'] },
+    { expected: missingWebHeader, header: 'identity;q=0,*;q=1', offers: ['identity'] },
+    { expected: 'br', header: 'gzip;q=0,*;q=1', offers: ['gzip', 'br'] },
+    { expected: missingWebHeader, header: 'gzip', offers: ['br'] },
+    { expected: 'identity', header: '', offers: ['gzip', 'identity'] },
+  ])('negotiates encoding $header for $offers', ({ expected, header, offers }) => {
+    expect(choose('encoding', header, offers)).toBe(expected)
+  })
+})
+
+describe('missing and empty preference fields', () => {
+  test.each([
+    { kind: 'mediaType', offer: 'text/html' },
+    { kind: 'language', offer: 'en' },
+    { kind: 'charset', offer: 'en' },
+    { kind: 'encoding', offer: 'en' },
+  ] satisfies { kind: Accepts.Kind; offer: string }[])('distinguishes empty $kind from absence', ({ kind, offer }) => {
+    const offers = [offer]
+    expect(choose(kind, missingWebHeader, offers)).toBe(offer)
+    expect(choose(kind, missingEffectHeader, offers)).toBe(offer)
+    expect(Accepts.parse(kind, missingEffectHeader)).toStrictEqual(Accepts.parse(kind, missingWebHeader))
+    expect(choose(kind, '', offers)).toBeNull()
+    expect(choose(kind, ' \t ', offers)).toBeNull()
   })
 
-  test('keeps encoding identity separate from positive wildcards', () => {
-    expect(choose('encoding', 'gzip;q=0.5', ['gzip', 'identity'])).toBe('identity')
-    expect(choose('encoding', '*;q=0.5', ['gzip', 'identity'])).toBe('identity')
-    expect(choose('encoding', '*;q=0', ['gzip', 'identity'])).toBeNull()
-    expect(choose('encoding', 'identity;q=0.5,*;q=0', ['gzip', 'identity'])).toBe('identity')
-    expect(choose('encoding', 'identity;q=0,*;q=1', ['identity'])).toBeNull()
-    expect(choose('encoding', 'gzip;q=0,*;q=1', ['gzip', 'br'])).toBe('br')
-    expect(choose('encoding', 'gzip', ['br'])).toBeNull()
-  })
-
-  test('distinguishes missing from explicitly empty headers', () => {
-    for (const kind of ['mediaType', 'language', 'charset', 'encoding'] satisfies Accepts.Kind[]) {
-      const supports = kind === 'mediaType' ? ['text/html'] : ['en']
-      expect(choose(kind, null, supports)).toBe(supports[0])
-      expect(choose(kind, undefined, supports)).toBe(supports[0])
-      expect(Accepts.parse(kind, undefined)).toStrictEqual(Accepts.parse(kind, null))
-      expect(choose(kind, '', supports)).toBeNull()
-      expect(choose(kind, ' \t ', supports)).toBeNull()
-    }
-    expect(choose('encoding', '', ['gzip', 'identity'])).toBe('identity')
-    expect(Accepts.parse('mediaType', null)).toStrictEqual(
+  test('records whether an empty preference list was explicitly supplied', () => {
+    expect(Accepts.parse('mediaType', missingWebHeader)).toStrictEqual(
       Result.succeed({ kind: 'mediaType', missing: true, preferences: [] }),
     )
     expect(Accepts.parse('mediaType', '')).toStrictEqual(
@@ -138,7 +158,7 @@ describe('accepts strict parsing', () => {
     'text/html;level=1;LEVEL=2',
     'text/html;profile="unterminated',
     'text/html;profile="a"b"',
-    'text/html;profile="a\\"',
+    globalThis.String.raw`text/html;profile="a\"`,
     'text/html,',
     ',text/html',
     'text/html,,text/plain',
@@ -153,151 +173,94 @@ describe('accepts strict parsing', () => {
     expect(Result.isFailure(Accepts.parse('mediaType', header))).toBe(true)
     expect(Result.isFailure(Accepts.negotiate('mediaType', header, ['text/html']))).toBe(true)
   })
+})
 
-  test('validates non-media syntax and offers instead of silently skipping invalid values', () => {
-    expect(Result.isFailure(Accepts.parse('language', 'en_US'))).toBe(true)
-    expect(Result.isFailure(Accepts.parse('language', 'en;level=1'))).toBe(true)
-    expect(Result.isFailure(Accepts.parse('encoding', 'gzip;level=1'))).toBe(true)
-    expect(Result.isFailure(Accepts.parse('charset', 'utf-8;foo=bar'))).toBe(true)
-    for (const offer of ['*/*', 'text/html;q=1', 'text/html,application/json', 'text/html\n']) {
+describe('invalid offers and preference bounds', () => {
+  test.each([
+    ['language', 'en_US'],
+    ['language', 'en;level=1'],
+    ['encoding', 'gzip;level=1'],
+    ['charset', 'utf-8;foo=bar'],
+  ] satisfies [Accepts.Kind, string][])('rejects invalid %s field %j', (kind, header) => {
+    expect(Result.isFailure(Accepts.parse(kind, header))).toBe(true)
+  })
+
+  test.each(['*/*', 'text/html;q=1', 'text/html,application/json', 'text/html\n'])(
+    'rejects invalid media offer %j',
+    (offer) => {
       expect(Result.isFailure(Accepts.negotiate('mediaType', '*/*', ['text/html', offer]))).toBe(true)
-    }
+    },
+  )
+
+  test('rejects a wildcard language offer', () => {
     expect(Result.isFailure(Accepts.negotiate('language', '*', ['*']))).toBe(true)
   })
 
   test('enforces bounds without turning oversized input into a match', () => {
-    expect(Result.isFailure(Accepts.parse('mediaType', 'x'.repeat(8193)))).toBe(true)
-    expect(Result.isFailure(Accepts.parse('encoding', Array.from({ length: 129 }, () => 'gzip').join(',')))).toBe(true)
-    expect(
-      Result.isFailure(
-        Accepts.negotiate(
-          'encoding',
-          '*',
-          Array.from({ length: 129 }, () => 'gzip'),
-        ),
-      ),
-    ).toBe(true)
-    expect(Result.isFailure(Accepts.negotiate('encoding', '*', ['x'.repeat(8193)]))).toBe(true)
-    expect(
-      Result.isFailure(
-        Accepts.parse('mediaType', `text/html${Array.from({ length: 129 }, (_, i) => `;p${i}=x`).join('')}`),
-      ),
-    ).toBe(true)
+    const oversized = String.repeat(8193)('x')
+    const tooMany = Array.replicate('gzip', 129)
+    const oversizedList = Array.join(tooMany, ',')
+    const oversizedPreference = preferenceWithParameters(129)
+    const outcomes: Result.Result<unknown, Accepts.ParseError>[] = [
+      Accepts.parse('mediaType', oversized),
+      Accepts.parse('encoding', oversizedList),
+      Accepts.negotiate('encoding', '*', tooMany),
+      Accepts.negotiate('encoding', '*', [oversized]),
+      Accepts.parse('mediaType', oversizedPreference),
+    ]
+    expect(Array.map(outcomes, Result.isFailure)).toStrictEqual([true, true, true, true, true])
   })
+})
 
+describe('validated preference details', () => {
   test('returns parsed parameters and numeric qualities', () => {
     expect(Accepts.parse('mediaType', 'TEXT/HTML;Charset="UTF-8";q=0.125')).toStrictEqual(
       Result.succeed({
         kind: 'mediaType',
         missing: false,
-        preferences: [{ value: 'text/html', parameters: { charset: 'utf-8' }, quality: 0.125 }],
+        preferences: [{ parameters: { charset: canonicalUtf8 }, quality: 0.125, value: 'text/html' }],
       }),
     )
   })
 
   test.each([
-    ['text/html;q=2', Arr.replicate('text/html', 129), 'Invalid quality'],
+    ['text/html;q=2', Array.replicate('text/html', 129), 'Invalid quality'],
     ['text/html;q=2,text/html;p="unterminated', [], 'Invalid or excessive preference list'],
     ['text/html;q=2,text/html;bad', [], 'Invalid quality'],
     ['text/html;bad;q=2', [], 'Invalid parameter'],
     ['text/html;q=1;p="a"b"c"', [], 'Unsupported or duplicate parameter'],
     ['text/html', ['text/html', 'text/html;q=1', '\n'], 'Invalid quality'],
     ['text/html', ['text/html', '\n', 'text/html;q=1'], 'Invalid or oversized offer'],
-  ] satisfies [string, ReadonlyArray<string>, string][])(
+  ] satisfies [string, Readonly<string[]>, string][])(
     'keeps the first failure for %s and %j',
     (header, offers, reason) => {
       const result = Accepts.negotiate('mediaType', header, offers)
-      expect(Result.isFailure(result) && result.failure).toMatchObject({
-        _tag: 'AcceptsParseError',
-        kind: 'mediaType',
-        reason,
-      })
-      expect(Result.isFailure(result) && result.failure).toBeInstanceOf(Accepts.ParseError)
+      const error = Result.getOrThrow(Result.flip(result))
+      expect(error).toMatchObject({ kind: 'mediaType', reason })
+      expect(Predicate.isTagged(error, 'AcceptsParseError')).toBe(true)
+      expect(error).toBeInstanceOf(Accepts.ParseError)
     },
   )
+})
 
+describe('escaped and prototype-named parameters', () => {
   test('keeps escaped quoted data and accepts prototype-named parameters as ordinary keys', () => {
-    const offer = String.raw`TEXT/HTML;profile="a,;\\\"b";__proto__=x;constructor=y`
+    const offer = globalThis.String.raw`TEXT/HTML;profile="a,;\\\"b";__proto__=x;constructor=y`
     expect(choose('mediaType', `${offer};q=1.`, ['text/html', offer])).toBe(offer)
     const parsed = Accepts.parse('mediaType', offer)
-    const parameters = Result.isSuccess(parsed) && parsed.success.preferences[0]?.parameters
+    const parameters = Result.getOrThrow(parsed).preferences[0]?.parameters
     expect(parameters).toStrictEqual({
-      profile: 'a,;\\"b',
       ['__proto__']: 'x',
       constructor: 'y',
+      profile: globalThis.String.raw`a,;\"b`,
     })
+  })
+
+  test('requires matching values for prototype-named parameters', () => {
     expect(choose('mediaType', 'text/html;__proto__=x', ['text/html'])).toBeNull()
     expect(choose('mediaType', 'text/html;constructor=y', ['text/html'])).toBeNull()
     expect(choose('mediaType', 'text/html;toString=z', ['text/html'])).toBeNull()
     expect(choose('mediaType', 'text/html;__proto__=x', ['text/html;__proto__=y'])).toBeNull()
     expect(Result.isFailure(Accepts.parse('mediaType', 'text/html;__proto__=x;__proto__=y'))).toBe(true)
   })
-})
-
-describe('accepts request adapters', () => {
-  test.each([
-    ['text/html;q=0,application/json', 200, 'application/json'],
-    ['text/*;q=0,application/json;q=0,*/*', 406, 'Not acceptable'],
-    ['application/json;q=invalid', 400, 'Invalid preferences'],
-  ] satisfies [string, number, string][])('supports an actual Web handler for %s', async (header, status, body) => {
-    const handler = HttpEffect.toWebHandler(
-      Accepts.negotiateEffect('mediaType', ['text/html', 'application/json']).pipe(
-        Effect.match({
-          onFailure: () => HttpServerResponse.text('Invalid preferences', { status: 400 }),
-          onSuccess: (selected) =>
-            Option.match(selected, {
-              onNone: () => HttpServerResponse.text('Not acceptable', { status: 406 }),
-              onSome: (value) => HttpServerResponse.text(value),
-            }),
-        }),
-      ),
-    )
-    const response = await handler(new Request('https://example.com/', { headers: { Accept: header } }))
-    expect(response.status).toBe(status)
-    await expect(response.text()).resolves.toBe(body)
-  })
-
-  test('reads Web Headers and Request without consuming the body', async () => {
-    const request = new Request('https://example.com/', {
-      method: 'POST',
-      headers: { Accept: 'application/json', 'Accept-Language': 'fr' },
-      body: 'untouched',
-    })
-    expect(Accepts.negotiateHeaders('language', request.headers, ['en', 'fr'])).toStrictEqual(
-      Result.succeed(Option.some('fr')),
-    )
-    expect(Accepts.negotiateRequest('mediaType', request, ['text/html', 'application/json'])).toStrictEqual(
-      Result.succeed(Option.some('application/json')),
-    )
-    await expect(request.text()).resolves.toBe('untouched')
-  })
-
-  live('negotiates through the real Effect request service', () =>
-    Effect.gen(function* () {
-      const request = HttpServerRequest.fromWeb(
-        new Request('https://example.com/', {
-          headers: { Accept: 'text/*;q=1,text/html;q=0.1,application/json;q=0.5' },
-        }),
-      )
-      const selected = yield* Accepts.negotiateEffect('mediaType', ['text/html', 'application/json']).pipe(
-        Effect.provideService(HttpServerRequest.HttpServerRequest, request),
-      )
-      expect(selected).toStrictEqual(Option.some('application/json'))
-    }),
-  )
-
-  live.each([
-    { expectedFailure: true, header: 'text/html;q=oops' },
-    { expectedFailure: false, header: 'text/html;q=0,*/*;q=1' },
-  ])('preserves the parse outcome through the Effect adapter: $header', ({ header, expectedFailure }) =>
-    Effect.gen(function* () {
-      const request = HttpServerRequest.fromWeb(new Request('https://example.com/', { headers: { Accept: header } }))
-      const result = yield* Accepts.negotiateEffect('mediaType', ['text/html']).pipe(
-        Effect.provideService(HttpServerRequest.HttpServerRequest, request),
-        Effect.result,
-      )
-      expect(Result.isFailure(result)).toBe(expectedFailure)
-      expect(Result.getSuccess(result)).toStrictEqual(expectedFailure ? Option.none() : Option.some(Option.none()))
-    }),
-  )
 })

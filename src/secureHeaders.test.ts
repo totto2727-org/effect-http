@@ -1,4 +1,4 @@
-import { Context, Effect } from 'effect'
+import { Context, Effect, Record } from 'effect'
 import { HttpEffect, HttpServerResponse } from 'effect/http'
 import { describe, expect, test } from 'vite-plus/test'
 
@@ -14,44 +14,48 @@ describe('secureHeaders pure policies', () => {
   test('has compact document-isolation defaults without HTTPS or CSP assumptions', () => {
     expect(Object.isFrozen(SecureHeaders.headers())).toBe(true)
     expect(SecureHeaders.headers()).toStrictEqual({
-      'x-content-type-options': 'nosniff',
-      'x-frame-options': 'DENY',
-      'referrer-policy': 'no-referrer',
       'cross-origin-opener-policy': 'same-origin',
       'cross-origin-resource-policy': 'same-origin',
+      'referrer-policy': 'no-referrer',
+      'x-content-type-options': 'nosniff',
+      'x-frame-options': 'DENY',
     })
   })
 
   test('supports explicit resource sharing, popup compatibility, and omitted policies', () => {
     expect(
       SecureHeaders.headers({
-        frameOptions: false,
-        referrerPolicy: 'same-origin',
         crossOriginOpenerPolicy: 'same-origin-allow-popups',
         crossOriginResourcePolicy: 'cross-origin',
+        frameOptions: false,
+        referrerPolicy: 'same-origin',
       }),
     ).toStrictEqual({
-      'x-content-type-options': 'nosniff',
-      'referrer-policy': 'same-origin',
       'cross-origin-opener-policy': 'same-origin-allow-popups',
       'cross-origin-resource-policy': 'cross-origin',
+      'referrer-policy': 'same-origin',
+      'x-content-type-options': 'nosniff',
     })
   })
+})
 
+describe('csp and hsts serialization', () => {
   test('serializes typed static CSP and opt-in HSTS', () => {
     expect(
-      SecureHeaders.serializeContentSecurityPolicy({
-        'default-src': ["'self'"],
-        'object-src': ["'none'"],
-        'img-src': ["'self'", 'https://images.example'],
-        'upgrade-insecure-requests': [],
-        sandbox: [],
-      }),
+      SecureHeaders.serializeContentSecurityPolicy(
+        Record.fromEntries([
+          ['default-src', ["'self'"]],
+          ['object-src', ["'none'"]],
+          ['img-src', ["'self'", 'https://images.example']],
+          ['upgrade-insecure-requests', []],
+          ['sandbox', []],
+        ]),
+      ),
     ).toBe(
       "default-src 'self'; object-src 'none'; img-src 'self' https://images.example; upgrade-insecure-requests; sandbox",
     )
     expect(
-      SecureHeaders.headers({ hsts: { maxAge: 31536000, includeSubDomains: true, preload: true } })[
+      SecureHeaders.headers({ hsts: { includeSubDomains: true, maxAge: 31_536_000, preload: true } })[
         'strict-transport-security'
       ],
     ).toBe('max-age=31536000; includeSubDomains; preload')
@@ -71,7 +75,9 @@ describe('secureHeaders pure policies', () => {
       SecureHeaders.ConfigError,
     )
   })
+})
 
+describe('security header input validation', () => {
   test('rejects unknown directives, empty policies, invalid boolean directives, and none mixtures', () => {
     expect(() => SecureHeaders.serializeContentSecurityPolicy({})).toThrow(SecureHeaders.ConfigError)
     expect(() => SecureHeaders.serializeContentSecurityPolicy({ 'default-src': [] })).toThrow(SecureHeaders.ConfigError)
@@ -92,7 +98,7 @@ describe('secureHeaders pure policies', () => {
       'Invalid CSP value for upgrade-insecure-requests',
     )
     // @ts-expect-error JavaScript callers can supply an invalid flag even for a valid age.
-    expect(() => SecureHeaders.headers({ hsts: { maxAge: 1, includeSubDomains: 'true', preload: true } })).toThrow(
+    expect(() => SecureHeaders.headers({ hsts: { includeSubDomains: 'true', maxAge: 1, preload: true } })).toThrow(
       'Invalid HSTS configuration',
     )
   })
@@ -105,16 +111,21 @@ describe('secureHeaders pure policies', () => {
     // @ts-expect-error Invalid frame policy is not accepted.
     expect(() => SecureHeaders.headers({ frameOptions: 'ALLOWALL' })).toThrow(SecureHeaders.ConfigError)
   })
+})
 
-  test.each([-1, NaN, Infinity, 1.5, Number.MAX_SAFE_INTEGER + 1])('rejects invalid HSTS age %j', (maxAge) => {
-    expect(() => SecureHeaders.middleware({ hsts: { maxAge } })).toThrow(SecureHeaders.ConfigError)
-  })
+describe('hsts age and preload constraints', () => {
+  test.each([-1, Number.NaN, Number.POSITIVE_INFINITY, 1.5, Number.MAX_SAFE_INTEGER + 1])(
+    'rejects invalid HSTS age %j',
+    (maxAge) => {
+      expect(() => SecureHeaders.middleware({ hsts: { maxAge } })).toThrow(SecureHeaders.ConfigError)
+    },
+  )
 
   test('rejects preload without its prerequisites', () => {
-    expect(() => SecureHeaders.headers({ hsts: { maxAge: 10, includeSubDomains: true, preload: true } })).toThrow(
+    expect(() => SecureHeaders.headers({ hsts: { includeSubDomains: true, maxAge: 10, preload: true } })).toThrow(
       SecureHeaders.ConfigError,
     )
-    expect(() => SecureHeaders.headers({ hsts: { maxAge: 31536000, preload: true } })).toThrow(
+    expect(() => SecureHeaders.headers({ hsts: { maxAge: 31_536_000, preload: true } })).toThrow(
       SecureHeaders.ConfigError,
     )
   })
@@ -124,27 +135,33 @@ describe('secureHeaders HTTP middleware', () => {
   test('applies defaults, overrides insecure app values, and removes X-Powered-By', async () => {
     const app = Effect.succeed(
       HttpServerResponse.text('body', {
+        headers: { 'x-custom': 'kept', 'x-frame-options': 'ALLOWALL', 'x-powered-by': 'framework' },
         status: 202,
-        headers: { 'x-powered-by': 'framework', 'x-frame-options': 'ALLOWALL', 'x-custom': 'kept' },
       }),
     )
     const response = await HttpEffect.toWebHandler(SecureHeaders.middleware()(app))(new Request('https://app.example'))
     expect(response.status).toBe(202)
     await expect(response.text()).resolves.toBe('body')
-    expect(response.headers.get('x-powered-by')).toBeNull()
-    expect(response.headers.get('x-custom')).toBe('kept')
-    for (const [name, value] of Object.entries(SecureHeaders.headers())) expect(response.headers.get(name)).toBe(value)
-    expect(response.headers.get('strict-transport-security')).toBeNull()
-    expect(response.headers.get('content-security-policy')).toBeNull()
+    const { headers } = response
+    const defaults = SecureHeaders.headers()
+    expect(Record.map(defaults, (_value, name) => headers.get(name))).toStrictEqual(defaults)
+    expect({
+      contentSecurityPolicy: headers.has('content-security-policy'),
+      custom: headers.get('x-custom'),
+      hsts: headers.has('strict-transport-security'),
+      poweredBy: headers.has('x-powered-by'),
+    }).toStrictEqual({ contentSecurityPolicy: false, custom: 'kept', hsts: false, poweredBy: false })
   })
+})
 
+describe('configured middleware', () => {
   test('applies opt-in CSP and HSTS to real responses', async () => {
-    const handler = HttpEffect.toWebHandler(
-      SecureHeaders.middleware({
-        hsts: { maxAge: 600 },
-        contentSecurityPolicy: { 'default-src': ["'none'"], 'frame-ancestors': ["'none'"] },
-      })(Effect.succeed(HttpServerResponse.empty({ status: 403 }))),
-    )
+    const middleware = SecureHeaders.middleware({
+      contentSecurityPolicy: { 'default-src': ["'none'"], 'frame-ancestors': ["'none'"] },
+      hsts: { maxAge: 600 },
+    })
+    const denied = Effect.succeed(HttpServerResponse.empty({ status: 403 }))
+    const handler = HttpEffect.toWebHandler(middleware(denied))
     const response = await handler(new Request('https://app.example'))
     expect(response.status).toBe(403)
     expect(response.headers.get('strict-transport-security')).toBe('max-age=600')
@@ -155,14 +172,14 @@ describe('secureHeaders HTTP middleware', () => {
     const sources = ["'self'"]
     const policy = SecureHeaders.middleware({ contentSecurityPolicy: { 'default-src': sources } })
     sources.push('*')
-    const response = await HttpEffect.toWebHandler(policy(Effect.succeed(HttpServerResponse.empty())))(
-      new Request('https://app.example'),
-    )
+    const app = Effect.succeed(HttpServerResponse.empty())
+    const handler = HttpEffect.toWebHandler(policy(app))
+    const response = await handler(new Request('https://app.example'))
     expect(response.headers.get('content-security-policy')).toBe("default-src 'self'")
   })
 
   test('preserves error and environment types', () => {
-    class Service extends Context.Service<Service, { readonly value: string }>()('SecureHeadersTestService') {}
+    class Service extends Context.Service<Service, Readonly<{ value: string }>>()('SecureHeadersTestService') {}
     const app: Effect.Effect<HttpServerResponse.HttpServerResponse, 'failure', Service> = Effect.flatMap(Service, () =>
       Effect.fail('failure' as const),
     )

@@ -1,7 +1,7 @@
 import { live } from '@effect/vitest'
-import { Context, Effect, Result, Schema } from 'effect'
+import { Context, Data, Effect, Predicate, Result, Schema } from 'effect'
 import { Headers, HttpClientRequest, HttpEffect, HttpServerRequest, HttpServerResponse } from 'effect/http'
-import { describe, expect, test } from 'vite-plus/test'
+import { describe, expect, expectTypeOf, test } from 'vite-plus/test'
 
 import * as Csrf from './csrf.ts'
 
@@ -12,7 +12,7 @@ const request = { method: 'POST', url: target }
 
 describe('csrf pure decisions', () => {
   test.each(['GET', 'HEAD', 'OPTIONS', 'get'])('bypasses safe %s', (method) => {
-    expect(Csrf.decide({ method, url: '', origin: 'null', secFetchSite: 'cross-site' })).toStrictEqual({
+    expect(Csrf.decide({ method, origin: 'null', secFetchSite: 'cross-site', url: '' })).toStrictEqual({
       allowed: true,
     })
   })
@@ -27,12 +27,14 @@ describe('csrf pure decisions', () => {
     expect(Csrf.decide({ ...request, origin: 'http://app.example' }).allowed).toBe(false)
     expect(Csrf.decide({ ...request, origin: 'https://app.example:444' }).allowed).toBe(false)
   })
+})
 
+describe('origin syntax and normalization', () => {
   test.each([
     'null',
     '',
     'https://app.example/path',
-    'https://app.example\u007f',
+    'https://app.example\u007F',
     'https://user@app.example',
     'https://app.example?x',
     'https://app.example#x',
@@ -49,7 +51,7 @@ describe('csrf pure decisions', () => {
   test.each([
     'https://app.example/path/..',
     'https://@app.example',
-    'https:\\app.example',
+    String.raw`https:\app.example`,
     'https://app.example\t',
     'https://app.example?',
     'https://app.example#',
@@ -60,7 +62,9 @@ describe('csrf pure decisions', () => {
       reason: 'untrusted-origin',
     })
   })
+})
 
+describe('fetch metadata proof', () => {
   test('does not let metadata override Origin and rejects contradictory claims', () => {
     expect(Csrf.decide({ ...request, origin: 'https://evil.example', secFetchSite: 'same-origin' }).allowed).toBe(false)
     expect(
@@ -81,10 +85,14 @@ describe('csrf pure decisions', () => {
       ),
     ).toStrictEqual({ allowed: true })
     expect(Csrf.decide({ ...request, secFetchSite: 'same-origin' })).toStrictEqual({ allowed: true })
-    for (const secFetchSite of ['same-site', 'cross-site', 'none'])
-      expect(Csrf.decide({ ...request, secFetchSite }).allowed).toBe(false)
   })
 
+  test.each(['same-site', 'cross-site', 'none'])('rejects %s as the only proof', (secFetchSite) => {
+    expect(Csrf.decide({ ...request, secFetchSite }).allowed).toBe(false)
+  })
+})
+
+describe('allowlist and validation precedence', () => {
   test.each(['*', 'null', 'https://example.com/path', 'https://example.com\r\nX: bad'])(
     'rejects invalid allowlist configuration %j',
     (origin) => {
@@ -94,7 +102,7 @@ describe('csrf pure decisions', () => {
   )
 
   test('rejects an invalid target even with metadata proof', () => {
-    expect(Csrf.decide({ ...request, url: '/relative', secFetchSite: 'same-origin' })).toStrictEqual({
+    expect(Csrf.decide({ ...request, secFetchSite: 'same-origin', url: '/relative' })).toStrictEqual({
       allowed: false,
       reason: 'invalid-target',
     })
@@ -115,33 +123,35 @@ describe('csrf pure decisions', () => {
       reason: 'untrusted-origin',
     })
   })
+})
 
+describe('configuration error causes', () => {
   test('requires and preserves the schema decoding cause on ConfigError', () => {
-    const failure = decodeString(null)
-    if (Result.isSuccess(failure)) throw new Error('expected schema failure')
-    const cause = failure.failure
-    const error = new Csrf.ConfigError({ message: 'invalid configuration', cause })
+    const cause = Result.getOrThrow(Result.flip(decodeString(42)))
+    const error = new Csrf.ConfigError({ cause, message: 'invalid configuration' })
     expect(error).toBeInstanceOf(Error)
-    expect(error).toMatchObject({ _tag: 'ConfigError', message: 'invalid configuration' })
+    expect(error.message).toBe('invalid configuration')
+    expect(Predicate.isTagged(error, 'ConfigError')).toBe(true)
     expect(error.cause).toBe(cause)
-    expect(error.cause).toBeInstanceOf(Schema.SchemaError)
-    // @ts-expect-error Schema decoding causes cannot be omitted.
-    const withoutCause = () => new Csrf.ConfigError({ message: 'invalid configuration' })
-    expect(withoutCause).toBeTypeOf('function')
+    expectTypeOf<{ message: string }>().not.toExtend<ConstructorParameters<typeof Csrf.ConfigError>[0]>()
+  })
+
+  test('preserves a schema failure for an invalid configured origin', () => {
+    const expectedCause: unknown = expect.any(Schema.SchemaError)
     expect(() => Csrf.middleware({ allowedOrigins: ['null'] })).toThrow(
-      expect.objectContaining({ cause: expect.any(Schema.SchemaError) }),
+      expect.objectContaining({ cause: expectedCause }),
     )
   })
 })
 
+const HandlerExecuted = Data.TaggedError('HandlerExecuted')
+
 describe('csrf HTTP middleware', () => {
   test('denies JSON POST without executing the handler and prevents caching', async () => {
-    const app = Effect.sync(() => {
-      throw new Error('handler must not execute')
-    })
+    const app = Effect.die(new HandlerExecuted<{ message: string }>({ message: 'handler must not execute' }))
     const handler = HttpEffect.toWebHandler(Csrf.middleware()(app))
     const response = await handler(
-      new Request(target, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' }),
+      new Request(target, { body: '{}', headers: { 'content-type': 'application/json' }, method: 'POST' }),
     )
     expect(response.status).toBe(403)
     expect(response.headers.get('cache-control')).toBe('no-store')
@@ -151,13 +161,13 @@ describe('csrf HTTP middleware', () => {
   test('passes accepted unsafe requests and merges Vary without duplicates', async () => {
     const app = Effect.succeed(
       HttpServerResponse.text('accepted', {
-        status: 201,
         headers: { vary: 'sec-fetch-site, Accept, origin, 10, X-Custom, 2, , aCCEPT, ORIGIN, 10, __proto__' },
+        status: 201,
       }),
     )
     const handler = HttpEffect.toWebHandler(Csrf.middleware()(app))
     const response = await handler(
-      new Request(target, { method: 'DELETE', headers: { origin: 'https://app.example' } }),
+      new Request(target, { headers: { origin: 'https://app.example' }, method: 'DELETE' }),
     )
     expect(response.status).toBe(201)
     await expect(response.text()).resolves.toBe('accepted')
@@ -165,27 +175,32 @@ describe('csrf HTTP middleware', () => {
   })
 
   test('does not trust forwarded host or protocol, or permit evil Origin with same-origin metadata', async () => {
-    const handler = HttpEffect.toWebHandler(Csrf.middleware()(Effect.succeed(HttpServerResponse.text('unsafe'))))
+    const app = Effect.succeed(HttpServerResponse.text('unsafe'))
+    const handler = HttpEffect.toWebHandler(Csrf.middleware()(app))
     const response = await handler(
       new Request(target, {
-        method: 'POST',
         headers: {
+          forwarded: 'host=evil.example;proto=https',
           origin: 'https://evil.example',
           'sec-fetch-site': 'same-origin',
           'x-forwarded-host': 'evil.example',
           'x-forwarded-proto': 'https',
-          forwarded: 'host=evil.example;proto=https',
         },
+        method: 'POST',
       }),
     )
     expect(response.status).toBe(403)
   })
+})
 
+describe('relative request targets', () => {
   live('accepts relative HTTP targets and honors HTTPS without trusting forwarding headers', () =>
     Effect.gen(function* () {
       const app = Csrf.middleware()(Effect.succeed(HttpServerResponse.empty({ status: 204 })))
-      const respond = (request: HttpServerRequest.HttpServerRequest) =>
-        Effect.provideService(app, HttpServerRequest.HttpServerRequest, request)
+      const respond = (
+        serverRequest: HttpServerRequest.HttpServerRequest,
+      ): Effect.Effect<HttpServerResponse.HttpServerResponse> =>
+        Effect.provideService(app, HttpServerRequest.HttpServerRequest, serverRequest)
       const http = HttpServerRequest.fromClientRequest(
         HttpClientRequest.post('/action', {
           headers: { host: 'app.example', origin: 'http://app.example', 'x-forwarded-proto': 'https' },
@@ -203,34 +218,38 @@ describe('csrf HTTP middleware', () => {
       expect([httpResponse.status, httpsResponse.status, rejectedResponse.status]).toStrictEqual([204, 204, 403])
     }),
   )
+})
 
+describe('trusted target authority', () => {
   live.each([
-    { url: '//evil.example/action', host: 'app.example', origin: 'http://app.example', status: 204 },
-    { url: '//evil.example/action', host: 'app.example', origin: 'http://evil.example', status: 403 },
-    { url: '/action', origin: 'http://localhost', status: 403 },
-    { url: '/action', host: '[invalid', origin: 'http://app.example', status: 403 },
-    { url: target, host: 'evil.example', origin: 'https://app.example', status: 204 },
-    { url: target, host: 'evil.example', origin: 'https://evil.example', status: 403 },
-    { url: target, origin: 'https://app.example', status: 204 },
+    { host: 'app.example', origin: 'http://app.example', status: 204, url: '//evil.example/action' },
+    { host: 'app.example', origin: 'http://evil.example', status: 403, url: '//evil.example/action' },
+    { origin: 'http://localhost', status: 403, url: '/action' },
+    { host: '[invalid', origin: 'http://app.example', status: 403, url: '/action' },
+    { host: 'evil.example', origin: 'https://app.example', status: 204, url: target },
+    { host: 'evil.example', origin: 'https://evil.example', status: 403, url: target },
+    { origin: 'https://app.example', status: 204, url: target },
   ])('delegates request URL resolution without changing the trusted authority: %j', (input) =>
     Effect.gen(function* () {
       const app = Csrf.middleware()(Effect.succeed(HttpServerResponse.empty({ status: 204 })))
-      const headers = { origin: input.origin, ...(input.host ? { host: input.host } : {}) }
+      const headers = { ...(Predicate.isNullish(input.host) ? {} : { host: input.host }), origin: input.origin }
       const serverRequest = HttpServerRequest.fromClientRequest(HttpClientRequest.post(input.url, { headers }))
       const response = yield* Effect.provideService(app, HttpServerRequest.HttpServerRequest, serverRequest)
       expect(response.status).toBe(input.status)
     }),
   )
+})
 
+describe('middleware response headers and types', () => {
   test('retains wildcard Vary', async () => {
-    const handler = HttpEffect.toWebHandler(
-      Csrf.middleware()(Effect.succeed(HttpServerResponse.empty({ headers: { vary: 'Accept, *, origin' } }))),
-    )
-    expect((await handler(new Request(target))).headers.get('vary')).toBe('Accept, *, origin')
+    const app = Effect.succeed(HttpServerResponse.empty({ headers: { vary: 'Accept, *, origin' } }))
+    const handler = HttpEffect.toWebHandler(Csrf.middleware()(app))
+    const response = await handler(new Request(target))
+    expect(response.headers.get('vary')).toBe('Accept, *, origin')
   })
 
   test('preserves error and environment types', () => {
-    class Service extends Context.Service<Service, { readonly value: string }>()('CsrfTestService') {}
+    class Service extends Context.Service<Service, Readonly<{ value: string }>>()('CsrfTestService') {}
     const app: Effect.Effect<HttpServerResponse.HttpServerResponse, 'failure', Service> = Effect.flatMap(Service, () =>
       Effect.fail('failure' as const),
     )
