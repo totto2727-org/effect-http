@@ -10,6 +10,7 @@ export class ConfigError extends Data.TaggedError('ConditionalRequestConfigError
 
 const Tags = Data.taggedEnum<Etag.Etag>()
 const BodyLimit = Schema.Natural.pipe(Schema.brand('ConditionalRequestBodyLimit'))
+const decodeBodyLimit = Schema.decodeUnknownOption(BodyLimit)
 const EtagHeaderLength = Schema.isMaxLength(8192)
 // Use an absolute end assertion: `$` alone also matches before a final newline.
 const EtagOpaqueValue = Schema.String.check(Schema.isPattern(/^[\x21\x23-\x7e\x80-\xff]*(?![\s\S])/)).pipe(
@@ -33,7 +34,7 @@ export const parseEtag = (value: string): ParsedEtag | undefined =>
   decodeEtag(value).pipe(Option.map(toEtag), Option.getOrUndefined)
 
 export const matches = (left: Etag.Etag, right: Etag.Etag, strong = false): boolean =>
-  left.value === right.value && (!strong || (left._tag === 'Strong' && right._tag === 'Strong'))
+  left.value === right.value && (!strong || (Tags.$is('Strong')(left) && Tags.$is('Strong')(right)))
 
 const EtagListHeader = Schema.String.check(
   EtagHeaderLength,
@@ -50,11 +51,15 @@ const matchEtagList = (
   strong: boolean,
 ): boolean => {
   const input = String.replace(/^[\t ]+|[\t ]+$/g, '')(value)
-  if (input === '*') return exists
+  if (input === '*') {
+    return exists
+  }
   // Scan quoted tokens without validating their contents. Require complete coverage before comparing any tag.
   const items = Array.fromIterable(String.matchAll(/[\t ]*([^,"\t ]*"[^"]*")[\t ]*(,|$)/gy)(input))
   const complete = Array.reduce(items, 0, (length, item) => length + String.length(item[0])) === String.length(input)
-  if (!complete || String.endsWith(',')(input) || Predicate.isNullish(tag)) return false
+  if (!complete || String.endsWith(',')(input) || Predicate.isNullish(tag)) {
+    return false
+  }
   return Option.exists(decodeEtagList(Array.map(items, (item) => item[1])), (entries) =>
     Array.some(entries, (entry) => matches(toEtag(entry), tag, strong)),
   )
@@ -91,22 +96,28 @@ const evaluatePreconditions = (
 ): Decision => {
   const retrieval = method === 'GET' || method === 'HEAD'
   const ifMatch = headers['if-match']
-  if (Predicate.isNotNullish(ifMatch) && !listMatches(ifMatch, etag, exists, true)) return 'PreconditionFailed'
+  if (Predicate.isNotNullish(ifMatch) && !listMatches(ifMatch, etag, exists, true)) {
+    return 'PreconditionFailed'
+  }
   const unmodified = headers['if-unmodified-since']
   if (Predicate.isNullish(ifMatch) && Predicate.isNotNullish(unmodified) && Predicate.isNotNullish(modified)) {
-    if (Option.exists(HttpDate.parse(unmodified), (limit) => DateTime.isGreaterThan(modified, limit)))
+    if (Option.exists(HttpDate.parse(unmodified), (limit) => DateTime.isGreaterThan(modified, limit))) {
       return 'PreconditionFailed'
+    }
   }
   const none = headers['if-none-match']
   if (Predicate.isNotNullish(none)) {
-    if (listMatches(none, etag, exists, false)) return retrieval ? 'NotModified' : 'PreconditionFailed'
+    if (listMatches(none, etag, exists, false)) {
+      return retrieval ? 'NotModified' : 'PreconditionFailed'
+    }
   } else if (retrieval && Predicate.isNotNullish(modified) && Predicate.isNotNullish(headers['if-modified-since'])) {
     if (
       Option.exists(HttpDate.parse(headers['if-modified-since']), (limit) =>
         DateTime.isLessThanOrEqualTo(modified, limit),
       )
-    )
+    ) {
       return 'NotModified'
+    }
   }
   return 'Proceed'
 }
@@ -140,7 +151,9 @@ export const apply = (
   const output = Predicate.isNullish(lastModified)
     ? withEtag
     : HttpServerResponse.setHeader(withEtag, 'last-modified', lastModified)
-  if (response.status !== 200) return output
+  if (response.status !== 200) {
+    return output
+  }
   const decision = evaluatePreconditions(
     {
       method: request.method,
@@ -156,7 +169,9 @@ export const apply = (
     },
     Option.fromNullishOr(output.headers['last-modified']).pipe(Option.flatMap(HttpDate.parse), Option.getOrUndefined),
   )
-  if (decision === 'Proceed') return output
+  if (decision === 'Proceed') {
+    return output
+  }
   return HttpServerResponse.empty({
     status: decision === 'NotModified' ? 304 : 412,
     cookies: output.cookies,
@@ -175,7 +190,7 @@ export const apply = (
  * Compression then runs first. Compressed streams require caller-supplied validators, preferably weak across encodings.
  */
 export const middleware = (options: { readonly maxBodyBytes: number }) => {
-  const maxBodyBytes = Schema.decodeUnknownOption(BodyLimit)(options.maxBodyBytes).pipe(
+  const maxBodyBytes = decodeBodyLimit(options.maxBodyBytes).pipe(
     Option.getOrThrowWith(() => new ConfigError({ message: 'Invalid body limit' })),
   )
   return <E, R>(
@@ -184,14 +199,20 @@ export const middleware = (options: { readonly maxBodyBytes: number }) => {
     Effect.flatMap(Digest.Digest, (digest) =>
       HttpEffect.withPreResponseHandler(handler, (request, response) =>
         Effect.gen(function* () {
-          if (request.method !== 'GET' && request.method !== 'HEAD') return response
-          if (request.method === 'HEAD' || Predicate.isNotNullish(response.headers['etag']))
+          if (request.method !== 'GET' && request.method !== 'HEAD') {
+            return response
+          }
+          if (request.method === 'HEAD' || Predicate.isNotNullish(response.headers['etag'])) {
             return apply(response, request)
+          }
           const body = response.body
-          if (response.status !== 200 || (body._tag !== 'Empty' && body._tag !== 'Uint8Array'))
+          if (response.status !== 200 || (body._tag !== 'Empty' && body._tag !== 'Uint8Array')) {
             return apply(response, request)
+          }
           const bytes = body._tag === 'Empty' ? new Uint8Array() : body.body
-          if (bytes.length > maxBodyBytes) return apply(response, request)
+          if (bytes.length > maxBodyBytes) {
+            return apply(response, request)
+          }
           const value = yield* digest.digestHex(Digest.sha256, bytes)
           return apply(response, request, { etag: Tags.Strong({ value }) })
         }),

@@ -75,7 +75,9 @@ const decodeHsts = Schema.decodeUnknownOption(HstsFields)
 
 const formatCspDirective = (name: CspDirective, values: readonly (typeof CspToken.Type)[]): string => {
   const isValueless = name === 'upgrade-insecure-requests' || name === 'block-all-mixed-content'
-  if (isValueless && !Array.isReadonlyArrayEmpty(values)) throw new ConfigError(`${name} does not accept values`)
+  if (isValueless && !Array.isReadonlyArrayEmpty(values)) {
+    throw new ConfigError(`${name} does not accept values`)
+  }
   if (!isValueless && name !== 'sandbox' && Array.isReadonlyArrayEmpty(values)) {
     throw new ConfigError(`${name} requires a source expression`)
   }
@@ -88,7 +90,9 @@ const formatCspDirective = (name: CspDirective, values: readonly (typeof CspToke
 /** Throws ConfigError for invalid directives or tokens, including delimiter and header injection. */
 export const serializeContentSecurityPolicy = (policy: ContentSecurityPolicy): string => {
   const entries = Record.toEntries<string, readonly string[] | undefined>(policy)
-  if (Array.isArrayEmpty(entries)) throw new ConfigError('Content Security Policy must contain at least one directive')
+  if (Array.isArrayEmpty(entries)) {
+    throw new ConfigError('Content Security Policy must contain at least one directive')
+  }
   const serialized = Array.map(entries, ([name, values]) => {
     const directive = decodeCspDirective(name)
     if (Option.isNone(directive) || !Array.isArray(values)) {
@@ -109,9 +113,13 @@ const header = (
   value: string | false,
   decode: (input: unknown) => Option.Option<string>,
 ): Option.Option<Header> => {
-  if (value === false) return Option.none()
+  if (value === false) {
+    return Option.none()
+  }
   const policy = decode(value)
-  if (Option.isNone(policy)) throw new ConfigError(`Invalid ${name} policy`)
+  if (Option.isNone(policy)) {
+    throw new ConfigError(`Invalid ${name} policy`)
+  }
   return Option.some([name, policy.value])
 }
 
@@ -133,7 +141,9 @@ export const headers = (config: Config = {}): Readonly<Record<string, string>> =
     ),
     Option.map(Option.fromNullishOr(config.hsts), ({ maxAge, includeSubDomains, preload }) => {
       const policy = decodeHsts({ maxAge, includeSubDomains, preload })
-      if (Option.isNone(policy)) throw new ConfigError('Invalid HSTS configuration')
+      if (Option.isNone(policy)) {
+        throw new ConfigError('Invalid HSTS configuration')
+      }
       return serializeHsts(policy.value)
     }),
     Option.map(Option.fromNullishOr(config.contentSecurityPolicy), (policy) => [
@@ -145,8 +155,9 @@ export const headers = (config: Config = {}): Readonly<Record<string, string>> =
 }
 
 const serializeHsts = ({ maxAge, includeSubDomains, preload }: typeof HstsFields.Type): Header => {
-  if (preload && (!includeSubDomains || Number.isLessThan(maxAge, 31536000)))
+  if (preload && (!includeSubDomains || Number.isLessThan(maxAge, 31536000))) {
     throw new ConfigError('HSTS preload requires subdomains and at least one year')
+  }
   return [
     'strict-transport-security',
     `max-age=${maxAge}${includeSubDomains ? '; includeSubDomains' : ''}${preload ? '; preload' : ''}`,

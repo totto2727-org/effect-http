@@ -79,43 +79,61 @@ const parseDirective = (
   }
 
   const duration = Record.get<string, SecondsKey>(seconds, name)
-  if (Option.isNone(duration) && name !== 'max-stale') return invalid(`Unsupported directive ${name}`)
+  if (Option.isNone(duration) && name !== 'max-stale') {
+    return invalid(`Unsupported directive ${name}`)
+  }
   if (Option.isNone(value)) {
     return name === 'max-stale' ? Result.succeed(['maxStale', true]) : invalid(`Missing value for ${name}`)
   }
 
   const number = decodeSeconds(String.replaceAll('"', '')(value.value))
-  if (Option.isNone(number)) return invalid('Invalid seconds')
+  if (Option.isNone(number)) {
+    return invalid('Invalid seconds')
+  }
   return Result.succeed([Option.getOrElse(duration, (): 'maxStale' => 'maxStale'), number.value])
 }
 
 /** Unknown extensions and duplicates are rejected. Input is limited to 8192 code units and 64 directives. */
 export const parse = (input: string): Result.Result<ParsedDirectives, ParseError> => {
   const header = decodeHeader(input)
-  if (Option.isNone(header)) return invalid('Invalid header bytes or length')
+  if (Option.isNone(header)) {
+    return invalid('Invalid header bytes or length')
+  }
   const parts = decodeParts(String.split(header.value, ','))
-  if (Option.isNone(parts)) return invalid('Too many directives')
-  if (String.isEmpty(String.trim(header.value))) return invalid('Empty Cache-Control')
+  if (Option.isNone(parts)) {
+    return invalid('Too many directives')
+  }
+  if (String.isEmpty(String.trim(header.value))) {
+    return invalid('Empty Cache-Control')
+  }
 
   const empty: Result.Result<Readonly<Record<string, DirectiveEntry>>, ParseError> = Result.succeed(Record.empty())
   const entries = Array.reduce(parts.value, empty, (state, part) =>
     Result.flatMap(state, (seen) => {
       const match = Option.getOrUndefined(splitDirective(part))
       const rawName = match?.[1]
-      if (Predicate.isNullish(rawName)) return invalid('Malformed directive')
+      if (Predicate.isNullish(rawName)) {
+        return invalid('Malformed directive')
+      }
       const name = decodeName(String.toLowerCase(rawName))
       const rawValue = match?.[2]
       const value = Option.flatMap(Option.fromNullishOr(rawValue), decodeValue)
       if (Option.isNone(name) || (Predicate.isNotNullish(rawValue) && Option.isNone(value))) {
         return invalid('Malformed directive')
       }
-      if (Record.has(seen, name.value)) return invalid(`Duplicate ${name.value}`)
+      if (Record.has(seen, name.value)) {
+        return invalid(`Duplicate ${name.value}`)
+      }
       return Result.map(parseDirective(name.value, value), (entry) => Record.set(seen, name.value, entry))
     }),
   )
-  if (Result.isFailure(entries)) return Result.fail(entries.failure)
+  if (Result.isFailure(entries)) {
+    return Result.fail(entries.failure)
+  }
   const directives: ParsedDirectives = Record.fromEntries(Record.values(entries.success))
-  if (directives.public && directives.private) return invalid('Conflicting visibility')
+  if (directives.public && directives.private) {
+    return invalid('Conflicting visibility')
+  }
   return Result.succeed(directives)
 }
 
@@ -129,7 +147,9 @@ export const format = (directives: Directives): string => {
   const maxStale = directives.maxStale
   const staleParts = Predicate.isNullish(maxStale) ? [] : [maxStale === true ? 'max-stale' : `max-stale=${maxStale}`]
   const value = Array.join([...flagParts, ...secondsParts, ...staleParts], ', ')
-  if (Result.isFailure(parse(value))) throw new ConfigError({ message: 'Invalid Cache-Control configuration' })
+  if (Result.isFailure(parse(value))) {
+    throw new ConfigError({ message: 'Invalid Cache-Control configuration' })
+  }
   return value
 }
 

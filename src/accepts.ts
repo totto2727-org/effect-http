@@ -23,7 +23,7 @@ export class ParseError extends Data.TaggedError('AcceptsParseError')<{
 }> {}
 
 export interface Preference {
-  readonly value: (typeof preferenceValues)[Kind]['range']['Type']
+  readonly value: typeof MediaRange.Type | typeof LanguageRange.Type | typeof CodingRange.Type
   readonly parameters: Readonly<Record<string, typeof ParameterValue.Type>>
   readonly quality: typeof Quality.Type
 }
@@ -65,13 +65,6 @@ const Wildcard = Schema.Literal('*')
 const LanguageRange = Schema.Union([Language, Wildcard])
 const CodingRange = Schema.Union([Coding, Wildcard])
 
-const preferenceValues = {
-  mediaType: { range: MediaRange, offer: MediaType },
-  language: { range: LanguageRange, offer: Language },
-  encoding: { range: CodingRange, offer: Coding },
-  charset: { range: CodingRange, offer: Coding },
-} satisfies Record<Kind, { readonly range: Schema.Schema<string>; readonly offer: Schema.Schema<string> }>
-
 const QuotedParameter = Schema.String.check(Schema.isPattern(/^"(?:[^"\\]|\\.)*"$/))
 const ParameterValue = BoundedAscii.pipe(Schema.brand('AcceptsParameterValue'))
 const WireParameterValue = Schema.Union([Token, QuotedParameter]).pipe(
@@ -87,14 +80,36 @@ const WireQuality = Schema.String.check(Schema.isPattern(/^(?:0(?:\.[0-9]{0,3})?
   Schema.decodeTo(Schema.NumberFromString),
   Schema.decodeTo(Quality),
 )
-const decodeQuality = Schema.decodeUnknownSync(Quality)
-const fullQuality = decodeQuality(1)
-const refusedQuality = decodeQuality(0)
+const decodeQuality = Schema.decodeUnknownOption(Quality)
+const fullQuality = Option.getOrThrow(decodeQuality(1))
+const refusedQuality = Option.getOrThrow(decodeQuality(0))
 
 const PreferenceParts = Schema.NonEmptyArray(Schema.String).check(Schema.isMaxLength(129))
 const PreferenceMembers = Schema.Array(BoundedAscii).check(Schema.isMaxLength(128))
 // Check the length without visiting entries before parsing offers in server order.
 const OfferList = Schema.declare<ReadonlyArray<unknown>>(Array.isArray).check(Schema.isMaxLength(128))
+
+const decodeBoundedAscii = Schema.decodeUnknownOption(BoundedAscii)
+const decodeParameterName = Schema.decodeUnknownOption(ParameterName)
+const decodeParameterValue = Schema.decodeUnknownOption(WireParameterValue)
+const decodeWireQuality = Schema.decodeUnknownOption(WireQuality)
+const decodePreferenceParts = Schema.decodeUnknownOption(PreferenceParts)
+const decodePreferenceMembers = Schema.decodeUnknownOption(PreferenceMembers)
+const decodeOfferList = Schema.decodeUnknownOption(OfferList)
+
+const decodeMediaType = Schema.decodeUnknownOption(MediaType)
+const decodeMediaRange = Schema.decodeUnknownOption(MediaRange)
+const decodeLanguage = Schema.decodeUnknownOption(Language)
+const decodeLanguageRange = Schema.decodeUnknownOption(LanguageRange)
+const decodeCoding = Schema.decodeUnknownOption(Coding)
+const decodeCodingRange = Schema.decodeUnknownOption(CodingRange)
+
+const preferenceDecoders = {
+  charset: { offer: decodeCoding, range: decodeCodingRange },
+  encoding: { offer: decodeCoding, range: decodeCodingRange },
+  language: { offer: decodeLanguage, range: decodeLanguageRange },
+  mediaType: { offer: decodeMediaType, range: decodeMediaRange },
+} satisfies Record<Kind, unknown>
 
 const invalid = (kind: Kind, reason: string): Result.Result<never, ParseError> =>
   Result.fail(new ParseError({ kind, reason }))
@@ -126,29 +141,33 @@ const parseParameter = (
   part: string,
 ): Result.Result<Parameters, ParseError> => {
   const equals = String.indexOf('=')(part)
-  if (Option.isNone(equals) || equals.value < 1) return invalid(kind, 'Invalid parameter')
-  const decodedName = pipe(
-    part,
-    String.slice(0, equals.value),
-    String.trim,
-    String.toLowerCase,
-    Schema.decodeUnknownOption(ParameterName),
-  )
+  if (Option.isNone(equals) || equals.value < 1) {
+    return invalid(kind, 'Invalid parameter')
+  }
+  const decodedName = pipe(part, String.slice(0, equals.value), String.trim, String.toLowerCase, decodeParameterName)
   const raw = pipe(part, String.slice(equals.value + 1), String.trim)
-  if (Option.isNone(decodedName)) return invalid(kind, 'Invalid parameter')
+  if (Option.isNone(decodedName)) {
+    return invalid(kind, 'Invalid parameter')
+  }
   const name = decodedName.value
   if (name === 'q') {
-    if (offered || Option.isSome(parameters.quality)) return invalid(kind, 'Invalid quality')
-    const quality = Schema.decodeUnknownOption(WireQuality)(raw)
-    if (Option.isNone(quality)) return invalid(kind, 'Invalid quality')
+    if (offered || Option.isSome(parameters.quality)) {
+      return invalid(kind, 'Invalid quality')
+    }
+    const quality = decodeWireQuality(raw)
+    if (Option.isNone(quality)) {
+      return invalid(kind, 'Invalid quality')
+    }
     return Result.succeed({ ...parameters, quality })
   }
   // Accept extensions after q are deliberately rejected rather than silently ignored.
   if (kind !== 'mediaType' || Option.isSome(parameters.quality) || Record.has(parameters.values, name)) {
     return invalid(kind, 'Unsupported or duplicate parameter')
   }
-  const decoded = Schema.decodeUnknownOption(WireParameterValue)(name === 'charset' ? String.toLowerCase(raw) : raw)
-  if (Option.isNone(decoded)) return invalid(kind, 'Invalid parameter value')
+  const decoded = decodeParameterValue(name === 'charset' ? String.toLowerCase(raw) : raw)
+  if (Option.isNone(decoded)) {
+    return invalid(kind, 'Invalid parameter value')
+  }
   return Result.succeed({
     ...parameters,
     values: Record.set(parameters.values, name, decoded.value),
@@ -160,12 +179,17 @@ const parsePreference = (
   input: typeof BoundedAscii.Type,
   offered: boolean,
 ): Result.Result<Preference, ParseError> => {
-  const parts = Schema.decodeUnknownOption(PreferenceParts)(split(input, ';'))
-  if (Option.isNone(parts)) return invalid(kind, 'Invalid preference value')
+  const parts = decodePreferenceParts(split(input, ';'))
+  if (Option.isNone(parts)) {
+    return invalid(kind, 'Invalid preference value')
+  }
   const [rawValue, ...rawParameters] = parts.value
-  const schemas = preferenceValues[kind]
-  const value = Schema.decodeUnknownOption(offered ? schemas.offer : schemas.range)(String.toLowerCase(rawValue))
-  if (Option.isNone(value)) return invalid(kind, 'Invalid preference value')
+  const decoders = preferenceDecoders[kind]
+  const decode = offered ? decoders.offer : decoders.range
+  const value: Option.Option<Preference['value']> = decode(String.toLowerCase(rawValue))
+  if (Option.isNone(value)) {
+    return invalid(kind, 'Invalid preference value')
+  }
   const initial: Result.Result<Parameters, ParseError> = Result.succeed({
     values: Record.empty(),
     quality: Option.none(),
@@ -191,12 +215,20 @@ const parsePreference = (
  * empty list members, and Accept extensions after q are rejected.
  */
 export const parse = (kind: Kind, header: string | null | undefined): Result.Result<Parsed, ParseError> => {
-  if (Predicate.isNullish(header)) return Result.succeed({ kind, missing: true, preferences: [] })
-  const input = Schema.decodeUnknownOption(BoundedAscii)(header)
-  if (Option.isNone(input)) return invalid(kind, 'Invalid or oversized header')
-  if (String.trim(input.value) === '') return Result.succeed({ kind, missing: false, preferences: [] })
-  const members = Schema.decodeUnknownOption(PreferenceMembers)(split(input.value, ','))
-  if (Option.isNone(members)) return invalid(kind, 'Invalid or excessive preference list')
+  if (Predicate.isNullish(header)) {
+    return Result.succeed({ kind, missing: true, preferences: [] })
+  }
+  const input = decodeBoundedAscii(header)
+  if (Option.isNone(input)) {
+    return invalid(kind, 'Invalid or oversized header')
+  }
+  if (String.isEmpty(String.trim(input.value))) {
+    return Result.succeed({ kind, missing: false, preferences: [] })
+  }
+  const members = decodePreferenceMembers(split(input.value, ','))
+  if (Option.isNone(members)) {
+    return invalid(kind, 'Invalid or excessive preference list')
+  }
   return pipe(
     members.value,
     Iterable.map((member) => parsePreference(kind, member, false)),
@@ -209,13 +241,21 @@ const specificity = (kind: Kind, range: Preference, offer: Preference): number =
   if (kind === 'mediaType') {
     const [type, subtype] = String.split(range.value, '/')
     const [offeredType, offeredSubtype] = String.split(offer.value, '/')
-    if (type !== '*' && type !== offeredType) return -1
-    if (subtype !== '*' && subtype !== offeredSubtype) return -1
+    if (type !== '*' && type !== offeredType) {
+      return -1
+    }
+    if (subtype !== '*' && subtype !== offeredSubtype) {
+      return -1
+    }
     const parameters = Record.toEntries(range.parameters)
-    if (!Array.every(parameters, ([key, value]) => Option.contains(value)(Record.get(offer.parameters, key)))) return -1
+    if (!Array.every(parameters, ([key, value]) => Option.contains(value)(Record.get(offer.parameters, key)))) {
+      return -1
+    }
     return (type === '*' ? 0 : subtype === '*' ? 1 : 2) * 1000 + parameters.length
   }
-  if (range.value === '*') return 0
+  if (range.value === '*') {
+    return 0
+  }
   if (kind === 'language') {
     return offer.value === range.value || String.startsWith(`${range.value}-`)(offer.value)
       ? String.split(range.value, '-').length
@@ -225,12 +265,18 @@ const specificity = (kind: Kind, range: Preference, offer: Preference): number =
 }
 
 const effectiveQuality = (parsed: Parsed, offer: Preference): typeof Quality.Type => {
-  if (parsed.missing) return fullQuality
+  if (parsed.missing) {
+    return fullQuality
+  }
   const { kind } = parsed
   const best = Array.reduce(parsed.preferences, { rank: -1, quality: refusedQuality }, (best, range) => {
     const rank = specificity(kind, range, offer)
-    if (rank < 0 || rank < best.rank) return best
-    if (rank === best.rank && best.quality <= range.quality) return best
+    if (rank < 0 || rank < best.rank) {
+      return best
+    }
+    if (rank === best.rank && best.quality <= range.quality) {
+      return best
+    }
     return { rank, quality: range.quality }
   })
   if (kind === 'encoding' && offer.value === 'identity' && best.rank < 1) {
@@ -257,13 +303,17 @@ export const negotiate = (
   supports: ReadonlyArray<string>,
 ): Result.Result<Option.Option<string>, ParseError> =>
   Result.flatMap(parse(kind, header), (parsed) => {
-    const allowedOffers = Schema.decodeUnknownOption(OfferList)(supports)
-    if (Option.isNone(allowedOffers)) return invalid(kind, 'Too many offers')
+    const allowedOffers = decodeOfferList(supports)
+    if (Option.isNone(allowedOffers)) {
+      return invalid(kind, 'Too many offers')
+    }
     return pipe(
       allowedOffers.value,
       Iterable.map((supported) => {
-        const input = Schema.decodeUnknownOption(BoundedAscii)(supported)
-        if (Option.isNone(input)) return invalid(kind, 'Invalid or oversized offer')
+        const input = decodeBoundedAscii(supported)
+        if (Option.isNone(input)) {
+          return invalid(kind, 'Invalid or oversized offer')
+        }
         return Result.map(parsePreference(kind, input.value, true), (offer) => ({
           supported: input.value,
           quality: effectiveQuality(parsed, offer),
@@ -283,12 +333,18 @@ export const negotiate = (
   })
 
 /** Negotiate directly from Web Headers, without middleware. */
-export const negotiateHeaders = (kind: Kind, headers: Headers, supports: ReadonlyArray<string>) =>
-  negotiate(kind, headers.get(names[kind]), supports)
+export const negotiateHeaders = (
+  kind: Kind,
+  headers: Headers,
+  supports: ReadonlyArray<string>,
+): Result.Result<Option.Option<string>, ParseError> => negotiate(kind, headers.get(names[kind]), supports)
 
 /** Negotiate directly from a Web Request, without reading its body. */
-export const negotiateRequest = (kind: Kind, request: Request, supports: ReadonlyArray<string>) =>
-  negotiateHeaders(kind, request.headers, supports)
+export const negotiateRequest = (
+  kind: Kind,
+  request: Request,
+  supports: ReadonlyArray<string>,
+): Result.Result<Option.Option<string>, ParseError> => negotiateHeaders(kind, request.headers, supports)
 
 /** Obtain the current Effect server request, preserving explicit parse failures. */
 export const negotiateEffect = (

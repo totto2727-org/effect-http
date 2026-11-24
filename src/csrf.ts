@@ -73,12 +73,17 @@ const origins = (config: Config): HashSet.HashSet<Origin> =>
   )
 
 const evaluate = (request: Request, allowedOrigins: HashSet.HashSet<Origin>): Decision => {
-  if (Array.contains(['GET', 'HEAD', 'OPTIONS'], String.toUpperCase(request.method))) return { allowed: true }
+  if (Array.contains(['GET', 'HEAD', 'OPTIONS'], String.toUpperCase(request.method))) {
+    return { allowed: true }
+  }
   const target = parseUrl(request.url)
-  if (Option.isNone(target)) return { allowed: false, reason: 'invalid-target' }
+  if (Option.isNone(target)) {
+    return { allowed: false, reason: 'invalid-target' }
+  }
   const origin = Predicate.isNullish(request.origin) ? Option.none<Origin>() : parseOrigin(request.origin)
-  if (Predicate.isNotNullish(request.origin) && Option.isNone(origin))
+  if (Predicate.isNotNullish(request.origin) && Option.isNone(origin)) {
     return { allowed: false, reason: 'invalid-origin' }
+  }
   const sameOrigin = Option.exists(origin, (value) => value === target.value.origin)
   if (Option.isSome(origin) && !sameOrigin && !HashSet.has(allowedOrigins, origin.value)) {
     return { allowed: false, reason: 'untrusted-origin' }
@@ -89,8 +94,9 @@ const evaluate = (request: Request, allowedOrigins: HashSet.HashSet<Origin>): De
     (!Array.contains(['same-origin', 'same-site', 'cross-site'], site) ||
       (site === 'same-origin' && Option.isSome(origin) && !sameOrigin) ||
       (site === 'cross-site' && sameOrigin))
-  )
+  ) {
     return { allowed: false, reason: 'contradictory-metadata' }
+  }
   return Option.isSome(origin) || site === 'same-origin'
     ? { allowed: true }
     : { allowed: false, reason: 'missing-proof' }
@@ -101,7 +107,9 @@ export const decide = (request: Request, config: Config = {}): Decision => evalu
 
 const vary = (response: HttpServerResponse.HttpServerResponse): HttpServerResponse.HttpServerResponse => {
   const existing = pipe(response.headers['vary'] ?? '', String.split(','), Array.map(String.trim))
-  if (Array.contains(existing, '*')) return response
+  if (Array.contains(existing, '*')) {
+    return response
+  }
   const merged = pipe(
     existing,
     Array.filter(String.isNonEmpty),
@@ -144,8 +152,9 @@ export const middleware = (config: Config = {}) => {
         },
         allowedOrigins,
       )
-      if (!decision.allowed)
+      if (!decision.allowed) {
         return vary(HttpServerResponse.empty({ status: 403, headers: { 'cache-control': 'no-store' } }))
+      }
       return vary(yield* app)
     }),
   )

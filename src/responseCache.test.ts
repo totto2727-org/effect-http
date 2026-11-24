@@ -1,6 +1,6 @@
 import { Clock, Deferred, Effect, Exit, Fiber, Result, Stream } from 'effect'
 import { HttpEffect, HttpServerRequest, HttpServerResponse } from 'effect/http'
-import { describe, expect, it } from 'vite-plus/test'
+import { describe, expect, test } from 'vite-plus/test'
 
 import * as ResponseCache from './responseCache.ts'
 
@@ -24,7 +24,7 @@ const fixture = async (
 }
 
 describe('ResponseCache', () => {
-  it.each([
+  test.each([
     { capacity: 0 },
     { capacity: 1.5 },
     { maxBodyBytes: -1 },
@@ -39,7 +39,7 @@ describe('ResponseCache', () => {
     const error = Result.getOrThrow(Exit.findDefect(exit))
     expect(error).toBeInstanceOf(ResponseCache.ConfigError)
   })
-  it('normalizes and deduplicates declared variants before emitting Vary and keying responses', async () => {
+  test('normalizes and deduplicates declared variants before emitting Vary and keying responses', async () => {
     const { handler } = await fixture(undefined, { vary: ['X-Theme', 'Accept-Language', 'accept-language'] })
     const request = (theme: string) =>
       new Request('https://example.com/', {
@@ -51,7 +51,7 @@ describe('ResponseCache', () => {
     expect(await (await handler(request('light'))).text()).toBe('2')
     expect(await (await handler(request('dark'))).text()).toBe('1')
   })
-  it('reuses public GET responses and manually invalidates', async () => {
+  test('reuses public GET responses and manually invalidates', async () => {
     const { handler, cache } = await fixture()
     const request = () => new Request('https://example.com/')
     expect(await (await handler(request())).text()).toBe('1')
@@ -61,7 +61,7 @@ describe('ResponseCache', () => {
     await Effect.runPromise(cache.invalidateAll)
     expect(await (await handler(request())).text()).toBe('2')
   })
-  it('isolates declared variants, hosts and targets', async () => {
+  test('isolates declared variants, hosts and targets', async () => {
     const { handler } = await fixture(undefined, { capacity: 10 })
     const fetch = async (url: string, language: string) =>
       (await handler(new Request(url, { headers: { 'accept-language': language } }))).text()
@@ -71,7 +71,7 @@ describe('ResponseCache', () => {
     expect(await fetch('https://one.test/b', 'en')).toBe('4')
     expect(await fetch('https://one.test/a', 'en')).toBe('1')
   })
-  it('evicts the least recently used entry', async () => {
+  test('evicts the least recently used entry', async () => {
     const { handler } = await fixture()
     const fetch = async (path: string) => (await handler(new Request(`https://example.com/${path}`))).text()
     expect(await fetch('a')).toBe('1')
@@ -80,7 +80,7 @@ describe('ResponseCache', () => {
     expect(await fetch('c')).toBe('3')
     expect(await fetch('b')).toBe('4')
   })
-  it.each([
+  test.each([
     { authorization: 'Bearer x' },
     { cookie: 'id=x' },
     { 'cache-control': 'no-cache' },
@@ -95,13 +95,13 @@ describe('ResponseCache', () => {
     expect(await (await handler(request())).text()).toBe('1')
     expect(await (await handler(request())).text()).toBe('2')
   })
-  it.each(['POST', 'HEAD', 'QUERY'])('bypasses %s methods', async (method) => {
+  test.each(['POST', 'HEAD', 'QUERY'])('bypasses %s methods', async (method) => {
     const { handler, count } = await fixture()
     await handler(new Request('https://example.com/', { method }))
     await handler(new Request('https://example.com/', { method }))
     expect(count()).toBe(2)
   })
-  it.each([
+  test.each([
     { 'cache-control': 'private' },
     { 'cache-control': 'no-store' },
     { 'cache-control': 'no-cache' },
@@ -127,7 +127,7 @@ describe('ResponseCache', () => {
     await handler(new Request('https://example.com/'))
     expect(await (await handler(new Request('https://example.com/'))).text()).toBe('2')
   })
-  it.each([
+  test.each([
     HttpServerResponse.stream(Stream.make(new Uint8Array([1]))),
     HttpServerResponse.formData(new FormData()),
     HttpServerResponse.raw('raw'),
@@ -148,7 +148,7 @@ describe('ResponseCache', () => {
     await handler(new Request('https://example.com/'))
     expect(count).toBe(2)
   })
-  it('clones stored bytes on insertion and each hit', async () => {
+  test('clones stored bytes on insertion and each hit', async () => {
     const bytes = new Uint8Array([1, 2])
     const cache = await Effect.runPromise(ResponseCache.make(options))
     const handler = cache.middleware(Effect.succeed(HttpServerResponse.uint8Array(bytes)))
@@ -170,7 +170,7 @@ describe('ResponseCache', () => {
     if (second.body._tag !== 'Uint8Array') throw new Error('Expected bytes')
     expect([...second.body.body]).toEqual([1, 2])
   })
-  it('does not repopulate after invalidating an in-flight miss', async () => {
+  test('does not repopulate after invalidating an in-flight miss', async () => {
     const result = await Effect.runPromise(
       Effect.gen(function* () {
         const cache = yield* ResponseCache.make(options)
@@ -205,7 +205,7 @@ describe('ResponseCache', () => {
     expect(result.hit).toBe('2')
     expect(result.fresh).toBe('2')
   })
-  it.each([false, true])(
+  test.each([false, true])(
     'expires subsecond-aged Date responses exactly at freshness boundary, delayed=%s',
     async (delayed) => {
       let now = delayed ? 500 : 999
@@ -241,7 +241,7 @@ describe('ResponseCache', () => {
       expect(await (await handler(new Request('https://example.com/'))).text()).toBe('2')
     },
   )
-  it.each([
+  test.each([
     [1999.999, '1'],
     [4503599627370401000, '4503599627370401'],
   ] as const)('emits integer Age for elapsed milliseconds %s', async (elapsed, expected) => {
@@ -269,7 +269,7 @@ describe('ResponseCache', () => {
     expect(await hit.text()).toBe('cached')
     expect(hit.headers.get('age')).toBe(expected)
   })
-  it('uses injected Clock for Age and max-age expiry', async () => {
+  test('uses injected Clock for Age and max-age expiry', async () => {
     let now = 0
     const clock: Clock.Clock = {
       currentTimeMillisUnsafe: () => now,

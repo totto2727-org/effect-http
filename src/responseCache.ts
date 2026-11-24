@@ -124,12 +124,17 @@ const storableResponse = (
       Option.map(String.toLowerCase),
       Option.exists(String.startsWith('text/event-stream')),
     )
-  )
+  ) {
     return false
+  }
   const varyHeader = headers['vary']
-  if (Predicate.isNullish(varyHeader)) return true
+  if (Predicate.isNullish(varyHeader)) {
+    return true
+  }
   const validated = decodeHeaderValue(varyHeader)
-  if (Option.isNone(validated)) return false
+  if (Option.isNone(validated)) {
+    return false
+  }
   const declared = pipe(validated.value, String.split(','), Array.map(String.trim), decodeDeclaredVary)
   return Option.exists(declared, (names) => Array.every(names, (name) => name !== '*' && Array.contains(vary, name)))
 }
@@ -144,7 +149,9 @@ const freshness = (
   Option.gen(function* () {
     const control = headers['cache-control']
     const directives = Predicate.isNullish(control) ? {} : yield* Result.getSuccess(CacheControl.parse(control))
-    if (directives.private || directives.noStore || directives.noCache) return yield* Option.none()
+    if (directives.private || directives.noStore || directives.noCache) {
+      return yield* Option.none()
+    }
     const seconds = directives.sMaxAge ?? directives.maxAge
     const lifetime = Predicate.isNullish(seconds) ? ttlMilliseconds : Number.min(ttlMilliseconds, seconds * 1000)
     const ageSeconds = yield* decodeAge(headers['age'] ?? '0')
@@ -191,9 +198,13 @@ export const make = (options: Options) =>
     ): Effect.Effect<HttpServerResponse.HttpServerResponse, E, R | HttpServerRequest.HttpServerRequest> =>
       Effect.gen(function* () {
         const request = yield* HttpServerRequest.HttpServerRequest
-        if (blockedRequest(request)) return yield* handler
+        if (blockedRequest(request)) {
+          return yield* handler
+        }
         const url = HttpServerRequest.toURL(request)
-        if (Option.isNone(url)) return yield* handler
+        if (Option.isNone(url)) {
+          return yield* handler
+        }
         const currentGeneration = yield* Ref.get(generation)
         const key = encodeKey([
           currentGeneration,
@@ -215,10 +226,14 @@ export const make = (options: Options) =>
           return HttpServerResponse.setHeader(copy(cached.value.response), 'age', `${ageSeconds}`)
         }
         const response = yield* handler
-        if (!storableResponse(response, config.maxBodyBytes, vary)) return response
+        if (!storableResponse(response, config.maxBodyBytes, vary)) {
+          return response
+        }
         const storedAt = yield* Clock.currentTimeMillis
         const fresh = freshness(response.headers, config.ttlMilliseconds, now, storedAt)
-        if (Option.isNone(fresh) || (yield* Ref.get(generation)) !== currentGeneration) return response
+        if (Option.isNone(fresh) || (yield* Ref.get(generation)) !== currentGeneration) {
+          return response
+        }
         const output =
           vary.length === 0 ? response : HttpServerResponse.setHeader(response, 'vary', Array.join(vary, ', '))
         yield* Cache.set(storage, key, { response: copy(output), storedAt, ...fresh.value })
