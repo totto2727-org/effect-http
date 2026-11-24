@@ -33,7 +33,8 @@ Prefer stricter, documented security semantics to byte-for-byte Hono compatibili
 - Compare the concrete import-path set with the compatibility table. Missing, extra, and duplicate paths must all be zero.
 - Name a concrete Effect or effront counterpart or state a specific exclusion reason in every row.
 - Keep effront's implemented scope distinct from planned features. Do not duplicate its HTML/Flight selection, private response policy, static-file handling, or Server Function origin enforcement.
-- Update both maintained comparison documents whenever adopting Hono changes or changing a feature disposition.
+- Update both maintained comparison documents and the [migration guide](.agents/skills/effect-http/references/hono-to-effect/README.md) whenever adopting Hono changes or changing a feature disposition.
+- Run the [inventory checker](.agents/skills/effect-http/references/hono-to-effect/README.md#maintain-the-inventory) against the pinned Hono checkout and effront recipes to verify exact coverage, classifications, and recipe anchors.
 - Preserve applicable MIT notices when adapting source.
 - Never report all of Effect as lacking a feature merely because it does not have a matching middleware name.
 
