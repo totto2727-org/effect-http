@@ -41,23 +41,24 @@ const names = {
   charset: 'accept-charset',
 } satisfies Record<Kind, string>
 
-const BoundedAscii = Schema.String.check(Schema.isMaxLength(8192), Schema.isPattern(/^[\x20-\x7e\t]*(?![\s\S])/)).pipe(
-  Schema.brand('AcceptsBoundedAscii'),
-)
+const BoundedAscii = Schema.String.check(
+  Schema.isMaxLength(8192),
+  Schema.isPattern(/^[\u0020-\u007E\t]*(?![\s\S])/u),
+).pipe(Schema.brand('AcceptsBoundedAscii'))
 const tokenCharacters = "!#$%&'+.^_`|~0-9A-Za-z-"
 const concreteTokenPattern = `[${tokenCharacters}]+`
-const Token = Schema.String.check(Schema.isPattern(new RegExp(`^[*${tokenCharacters}]+$`)))
+const Token = Schema.String.check(Schema.isPattern(new RegExp(`^[*${tokenCharacters}]+$`, 'u')))
 const ParameterName = Token.pipe(Schema.brand('AcceptsParameterName'))
-const Coding = Schema.String.check(Schema.isPattern(new RegExp(`^${concreteTokenPattern}$`))).pipe(
+const Coding = Schema.String.check(Schema.isPattern(new RegExp(`^${concreteTokenPattern}$`, 'u'))).pipe(
   Schema.brand('AcceptsCoding'),
 )
-const Language = Schema.String.check(Schema.isPattern(/^[A-Za-z]{1,8}(?:-[A-Za-z0-9]{1,8})*$/)).pipe(
+const Language = Schema.String.check(Schema.isPattern(/^[A-Za-z]{1,8}(?:-[A-Za-z0-9]{1,8})*$/u)).pipe(
   Schema.brand('AcceptsLanguage'),
 )
 const MediaType = Schema.String.check(
-  Schema.isPattern(new RegExp(`^${concreteTokenPattern}/${concreteTokenPattern}$`)),
+  Schema.isPattern(new RegExp(`^${concreteTokenPattern}/${concreteTokenPattern}$`, 'u')),
 ).pipe(Schema.brand('AcceptsMediaType'))
-const MediaWildcard = Schema.String.check(Schema.isPattern(new RegExp(`^${concreteTokenPattern}/\\*$`))).pipe(
+const MediaWildcard = Schema.String.check(Schema.isPattern(new RegExp(`^${concreteTokenPattern}/\\*$`, 'u'))).pipe(
   Schema.brand('AcceptsMediaWildcard'),
 )
 const MediaRange = Schema.Union([MediaType, Schema.Literal('*/*'), MediaWildcard])
@@ -65,18 +66,20 @@ const Wildcard = Schema.Literal('*')
 const LanguageRange = Schema.Union([Language, Wildcard])
 const CodingRange = Schema.Union([Coding, Wildcard])
 
-const QuotedParameter = Schema.String.check(Schema.isPattern(/^"(?:[^"\\]|\\.)*"$/))
+const QuotedParameter = Schema.String.check(Schema.isPattern(/^"(?:[^"\\]|\\.)*"$/u))
 const ParameterValue = BoundedAscii.pipe(Schema.brand('AcceptsParameterValue'))
 const WireParameterValue = Schema.Union([Token, QuotedParameter]).pipe(
   Schema.decodeTo(ParameterValue, {
     decode: SchemaGetter.transform((value) =>
-      String.startsWith('"')(value) ? pipe(value, String.slice(1, -1), String.replaceAll(/\\(.)/g, '$1')) : value,
+      String.startsWith('"')(value)
+        ? pipe(value, String.slice(1, -1), String.replaceAll(/\\(?<escaped>.)/gu, '$<escaped>'))
+        : value,
     ),
-    encode: SchemaGetter.transform((value) => `"${String.replaceAll(/["\\]/g, '\\$&')(value)}"`),
+    encode: SchemaGetter.transform((value) => `"${String.replaceAll(/["\\]/gu, '\\$&')(value)}"`),
   }),
 )
 const Quality = Schema.Number.check(Schema.isBetween({ minimum: 0, maximum: 1 })).pipe(Schema.brand('AcceptsQuality'))
-const WireQuality = Schema.String.check(Schema.isPattern(/^(?:0(?:\.[0-9]{0,3})?|1(?:\.0{0,3})?)$/)).pipe(
+const WireQuality = Schema.String.check(Schema.isPattern(/^(?:0(?:\.[0-9]{0,3})?|1(?:\.0{0,3})?)$/u)).pipe(
   Schema.decodeTo(Schema.NumberFromString),
   Schema.decodeTo(Quality),
 )
@@ -117,8 +120,13 @@ const invalid = (kind: Kind, reason: string): Result.Result<never, ParseError> =
 // Delimiters in quoted strings are data, not list or parameter separators.
 const split = (input: typeof BoundedAscii.Type, delimiter: ',' | ';'): ReadonlyArray<string> | undefined => {
   // The optional closing quote lets the scan report an unterminated string instead of skipping it.
-  const markers = Array.fromIterable(String.matchAll(/"(?:[^"\\]|\\.)*(")?|[;,]/g)(input))
-  if (Array.some(markers, ([marker, closing]) => String.startsWith('"')(marker) && Predicate.isNullish(closing))) {
+  const markers = Array.fromIterable(String.matchAll(/"(?:[^"\\]|\\.)*(?<closing>")?|[;,]/gu)(input))
+  if (
+    Array.some(
+      markers,
+      ({ 0: marker, groups }) => String.startsWith('"')(marker) && Predicate.isNullish(groups?.['closing']),
+    )
+  ) {
     return undefined
   }
   const separators = Array.filterMap(markers, ({ 0: marker, index }) =>

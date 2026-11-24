@@ -4,6 +4,8 @@ import { describe, expect, test } from 'vite-plus/test'
 
 import * as Csrf from './csrf.ts'
 
+const decodeString = Schema.decodeUnknownResult(Schema.String)
+
 const target = 'https://app.example/action'
 const request = { method: 'POST', url: target }
 
@@ -99,7 +101,7 @@ describe('Csrf pure decisions', () => {
     })
   })
   test('requires and preserves the schema decoding cause on ConfigError', () => {
-    const failure = Schema.decodeUnknownResult(Schema.String)(null)
+    const failure = decodeString(null)
     if (Result.isSuccess(failure)) throw new Error('expected schema failure')
     const cause = failure.failure
     const error = new Csrf.ConfigError({ message: 'invalid configuration', cause })

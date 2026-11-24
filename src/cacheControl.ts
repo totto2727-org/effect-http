@@ -40,7 +40,7 @@ const invalid = (reason: string): Result.Result<never, ParseError> => Result.fai
 
 const CacheControlHeader = Schema.String.check(
   Schema.isMaxLength(8192),
-  Schema.isPattern(/^[\t\x20-\x7e]*$(?![\s\S])/u),
+  Schema.isPattern(/^[\t\u0020-\u007E]*$(?![\s\S])/u),
 ).pipe(Schema.brand('CacheControlHeader'))
 const DirectiveParts = Schema.Array(Schema.String).check(Schema.isMaxLength(64)).pipe(Schema.brand('DirectiveParts'))
 const DirectiveName = Schema.String.check(Schema.isPattern(/^[!#$%&'*+.^_`|~\w-]+$(?![\s\S])/u)).pipe(
@@ -58,7 +58,7 @@ const decodeParts = Schema.decodeUnknownOption(DirectiveParts)
 const decodeName = Schema.decodeUnknownOption(DirectiveName)
 const decodeValue = Schema.decodeUnknownOption(DirectiveValue)
 const decodeSeconds = Schema.decodeUnknownOption(Seconds)
-const splitDirective = String.match(/^[\t ]*([^=\t ]+)[\t ]*(?:=[\t ]*(.*?))?[\t ]*$/)
+const splitDirective = String.match(/^[\t ]*(?<name>[^=\t ]+)[\t ]*(?:=[\t ]*(?<value>.*?))?[\t ]*$/u)
 type FlagKey = (typeof flags)[keyof typeof flags]
 type SecondsKey = (typeof seconds)[keyof typeof seconds]
 type ParsedDirectives = Omit<Directives, SecondsKey | 'maxStale'> & {
@@ -111,12 +111,12 @@ export const parse = (input: string): Result.Result<ParsedDirectives, ParseError
   const entries = Array.reduce(parts.value, empty, (state, part) =>
     Result.flatMap(state, (seen) => {
       const match = Option.getOrUndefined(splitDirective(part))
-      const rawName = match?.[1]
+      const rawName = match?.groups?.['name']
       if (Predicate.isNullish(rawName)) {
         return invalid('Malformed directive')
       }
       const name = decodeName(String.toLowerCase(rawName))
-      const rawValue = match?.[2]
+      const rawValue = match?.groups?.['value']
       const value = Option.flatMap(Option.fromNullishOr(rawValue), decodeValue)
       if (Option.isNone(name) || (Predicate.isNotNullish(rawValue) && Option.isNone(value))) {
         return invalid('Malformed directive')

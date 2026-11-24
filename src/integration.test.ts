@@ -44,7 +44,7 @@ test('negotiation, public cache, validators and security policies compose throug
   const english = await handler(request('en'))
   expect(await english.text()).toBe('en')
   const englishEtag = english.headers.get('etag')
-  expect(englishEtag).toMatch(/^"[a-f0-9]{64}"$/)
+  expect(englishEtag).toMatch(/^"[a-f0-9]{64}"$/u)
   const hit = await handler(request('en'))
   expect(await hit.text()).toBe('en')
   expect(hit.headers.get('age')).toBe('0')

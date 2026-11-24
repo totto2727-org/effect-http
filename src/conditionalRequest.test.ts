@@ -69,7 +69,7 @@ describe('ConditionalRequest', () => {
     expect(ConditionalRequest.parseEtag(`"${opaque}xx"`)).toEqual(Tags.Strong({ value: `${opaque}xx` }))
     expect(ConditionalRequest.parseEtag('""')).toEqual(Tags.Strong({ value: '' }))
   })
-  test.each(['"a,b", "bad tag"', '"a,b", "bad\ttag"', '"a,b", w/"other"', '"a,b", "\x7f"', '"a,b", "Ā"'])(
+  test.each(['"a,b", "bad tag"', '"a,b", "bad\ttag"', '"a,b", w/"other"', '"a,b", "\u007F"', '"a,b", "Ā"'])(
     'rejects a match followed by a token with invalid wire format: %s',
     (value) => {
       expect(ConditionalRequest.evaluate({ method: 'PUT', etag, headers: { 'if-match': value } })).toBe(
@@ -224,7 +224,7 @@ describe('ConditionalRequest', () => {
     )
     const identity = await handler(new Request('https://example.com/', { headers: { 'accept-encoding': 'identity' } }))
     const tag = identity.headers.get('etag')
-    expect(tag).toMatch(/^"[a-f0-9]{64}"$/)
+    expect(tag).toMatch(/^"[a-f0-9]{64}"$/u)
     const compressed = await handler(
       new Request('https://example.com/', { headers: { 'accept-encoding': 'gzip', 'if-none-match': tag ?? '' } }),
     )
@@ -269,7 +269,7 @@ describe('ConditionalRequest', () => {
     )
     const first = await handler(new Request('https://example.com/'))
     const value = first.headers.get('etag')
-    expect(value).toMatch(/^"[a-f0-9]{64}"$/)
+    expect(value).toMatch(/^"[a-f0-9]{64}"$/u)
     const response = await handler(new Request('https://example.com/', { headers: { 'if-none-match': value ?? '' } }))
     expect(response.status).toBe(304)
     expect(await response.text()).toBe('')

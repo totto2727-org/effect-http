@@ -13,7 +13,7 @@ const BodyLimit = Schema.Natural.pipe(Schema.brand('ConditionalRequestBodyLimit'
 const decodeBodyLimit = Schema.decodeUnknownOption(BodyLimit)
 const EtagHeaderLength = Schema.isMaxLength(8192)
 // Use an absolute end assertion: `$` alone also matches before a final newline.
-const EtagOpaqueValue = Schema.String.check(Schema.isPattern(/^[\x21\x23-\x7e\x80-\xff]*(?![\s\S])/)).pipe(
+const EtagOpaqueValue = Schema.String.check(Schema.isPattern(/^[\u0021\u0023-\u007E\u0080-\u00FF]*(?![\s\S])/u)).pipe(
   Schema.brand('EtagOpaqueValue'),
 )
 const EtagWire = Schema.String.check(EtagHeaderLength).pipe(
@@ -38,7 +38,7 @@ export const matches = (left: Etag.Etag, right: Etag.Etag, strong = false): bool
 
 const EtagListHeader = Schema.String.check(
   EtagHeaderLength,
-  Schema.isPattern(/^[\t\x20-\x7e\x80-\xff]*(?![\s\S])/),
+  Schema.isPattern(/^[\t\u0020-\u007E\u0080-\u00FF]*(?![\s\S])/u),
 ).pipe(Schema.brand('EtagListHeader'))
 const EtagList = Schema.Array(EtagWire).check(Schema.isBetweenLength(1, 64)).pipe(Schema.brand('EtagList'))
 const decodeEtagListHeader = Schema.decodeUnknownOption(EtagListHeader)
@@ -50,17 +50,17 @@ const matchEtagList = (
   exists: boolean,
   strong: boolean,
 ): boolean => {
-  const input = String.replace(/^[\t ]+|[\t ]+$/g, '')(value)
+  const input = String.replaceAll(/^[\t ]+|[\t ]+$/gu, '')(value)
   if (input === '*') {
     return exists
   }
   // Scan quoted tokens without validating their contents. Require complete coverage before comparing any tag.
-  const items = Array.fromIterable(String.matchAll(/[\t ]*([^,"\t ]*"[^"]*")[\t ]*(,|$)/gy)(input))
+  const items = Array.fromIterable(String.matchAll(/[\t ]*(?<tag>[^,"\t ]*"[^"]*")[\t ]*(?:,|$)/guy)(input))
   const complete = Array.reduce(items, 0, (length, item) => length + String.length(item[0])) === String.length(input)
   if (!complete || String.endsWith(',')(input) || Predicate.isNullish(tag)) {
     return false
   }
-  return Option.exists(decodeEtagList(Array.map(items, (item) => item[1])), (entries) =>
+  return Option.exists(decodeEtagList(Array.map(items, (item) => item.groups?.['tag'])), (entries) =>
     Array.some(entries, (entry) => matches(toEtag(entry), tag, strong)),
   )
 }
@@ -206,10 +206,13 @@ export const middleware = (options: { readonly maxBodyBytes: number }) => {
             return apply(response, request)
           }
           const body = response.body
-          if (response.status !== 200 || (body._tag !== 'Empty' && body._tag !== 'Uint8Array')) {
+          if (
+            response.status !== 200 ||
+            (!Predicate.isTagged(body, 'Empty') && !Predicate.isTagged(body, 'Uint8Array'))
+          ) {
             return apply(response, request)
           }
-          const bytes = body._tag === 'Empty' ? new Uint8Array() : body.body
+          const bytes = Predicate.isTagged(body, 'Empty') ? new Uint8Array() : body.body
           if (bytes.length > maxBodyBytes) {
             return apply(response, request)
           }

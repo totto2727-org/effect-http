@@ -46,7 +46,7 @@ const CspDirectiveName = Schema.Literals([
 ])
 export type CspDirective = typeof CspDirectiveName.Type
 
-const CspToken = Schema.String.check(Schema.isPattern(/^(?:(?![;,])[\x21-\x7e])+$(?![\s\S])/u)).pipe(
+const CspToken = Schema.String.check(Schema.isPattern(/^(?:(?![;,])[\u0021-\u007E])+$(?![\s\S])/u)).pipe(
   Schema.brand('CspToken'),
 )
 const FrameOptions = Schema.Literals(['DENY', 'SAMEORIGIN'])

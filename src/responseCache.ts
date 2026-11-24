@@ -58,9 +58,10 @@ const AgeFromString = Schema.String.check(Schema.isMaxLength(16), Schema.isPatte
   Schema.decodeTo(Schema.NumberFromString),
   Schema.decodeTo(AgeSeconds),
 )
-const HeaderValue = Schema.String.check(Schema.isMaxLength(8192), Schema.isPattern(/^[\t\x20-\x7e]*$(?![\s\S])/u)).pipe(
-  Schema.brand('ResponseCacheHeaderValue'),
-)
+const HeaderValue = Schema.String.check(
+  Schema.isMaxLength(8192),
+  Schema.isPattern(/^[\t\u0020-\u007E]*$(?![\s\S])/u),
+).pipe(Schema.brand('ResponseCacheHeaderValue'))
 const HeaderName = Schema.String.pipe(Schema.decode(SchemaTransformation.toLowerCase()))
   .check(Schema.isPattern(/^[!#$%&'*+.^_`|~\w-]+$(?![\s\S])/u))
   .pipe(Schema.brand('ResponseCacheHeaderName'))
@@ -77,7 +78,7 @@ const decodeAge = Schema.decodeUnknownOption(AgeFromString)
 const encodeKey = Schema.encodeSync(Schema.fromJsonString(Schema.Array(Schema.Json)))
 
 const copy = (response: HttpServerResponse.HttpServerResponse): HttpServerResponse.HttpServerResponse =>
-  response.body._tag === 'Uint8Array'
+  Predicate.isTagged(response.body, 'Uint8Array')
     ? HttpServerResponse.uint8Array(Bytes.concat([response.body.body]), {
         status: response.status,
         headers: response.headers,
@@ -118,8 +119,8 @@ const storableResponse = (
     !Cookies.isEmpty(response.cookies) ||
     Predicate.isNotNullish(headers['set-cookie']) ||
     Predicate.isNotNullish(headers['expires']) ||
-    (body._tag !== 'Empty' && body._tag !== 'Uint8Array') ||
-    (body._tag === 'Uint8Array' && body.body.length > maxBodyBytes) ||
+    (!Predicate.isTagged(body, 'Empty') && !Predicate.isTagged(body, 'Uint8Array')) ||
+    (Predicate.isTagged(body, 'Uint8Array') && body.body.length > maxBodyBytes) ||
     Option.fromNullishOr(headers['content-type']).pipe(
       Option.map(String.toLowerCase),
       Option.exists(String.startsWith('text/event-stream')),
@@ -149,7 +150,7 @@ const freshness = (
   Option.gen(function* () {
     const control = headers['cache-control']
     const directives = Predicate.isNullish(control) ? {} : yield* Result.getSuccess(CacheControl.parse(control))
-    if (directives.private || directives.noStore || directives.noCache) {
+    if (directives.private === true || directives.noStore === true || directives.noCache === true) {
       return yield* Option.none()
     }
     const seconds = directives.sMaxAge ?? directives.maxAge
@@ -234,8 +235,9 @@ export const make = (options: Options) =>
         if (Option.isNone(fresh) || (yield* Ref.get(generation)) !== currentGeneration) {
           return response
         }
-        const output =
-          vary.length === 0 ? response : HttpServerResponse.setHeader(response, 'vary', Array.join(vary, ', '))
+        const output = Array.isArrayEmpty(vary)
+          ? response
+          : HttpServerResponse.setHeader(response, 'vary', Array.join(vary, ', '))
         yield* Cache.set(storage, key, { response: copy(output), storedAt, ...fresh.value })
         return output
       })
