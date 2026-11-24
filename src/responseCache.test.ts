@@ -23,7 +23,7 @@ const fixture = async (
   return { cache, handler, count: () => count }
 }
 
-describe('ResponseCache', () => {
+describe('response cache behavior', () => {
   test.each([
     { capacity: 0 },
     { capacity: 1.5 },
@@ -39,6 +39,7 @@ describe('ResponseCache', () => {
     const error = Result.getOrThrow(Exit.findDefect(exit))
     expect(error).toBeInstanceOf(ResponseCache.ConfigError)
   })
+
   test('normalizes and deduplicates declared variants before emitting Vary and keying responses', async () => {
     const { handler } = await fixture(undefined, { vary: ['X-Theme', 'Accept-Language', 'accept-language'] })
     const request = (theme: string) =>
@@ -47,39 +48,43 @@ describe('ResponseCache', () => {
       })
     const first = await handler(request('dark'))
     expect(first.headers.get('vary')).toBe('accept-language, x-theme')
-    expect(await first.text()).toBe('1')
-    expect(await (await handler(request('light'))).text()).toBe('2')
-    expect(await (await handler(request('dark'))).text()).toBe('1')
+    await expect(first.text()).resolves.toBe('1')
+    await expect((await handler(request('light'))).text()).resolves.toBe('2')
+    await expect((await handler(request('dark'))).text()).resolves.toBe('1')
   })
+
   test('reuses public GET responses and manually invalidates', async () => {
     const { handler, cache } = await fixture()
     const request = () => new Request('https://example.com/')
-    expect(await (await handler(request())).text()).toBe('1')
+    await expect((await handler(request())).text()).resolves.toBe('1')
     const hit = await handler(request())
-    expect(await hit.text()).toBe('1')
+    await expect(hit.text()).resolves.toBe('1')
     expect(hit.headers.get('age')).toBe('0')
     await Effect.runPromise(cache.invalidateAll)
-    expect(await (await handler(request())).text()).toBe('2')
+    await expect((await handler(request())).text()).resolves.toBe('2')
   })
+
   test('isolates declared variants, hosts and targets', async () => {
     const { handler } = await fixture(undefined, { capacity: 10 })
     const fetch = async (url: string, language: string) =>
       (await handler(new Request(url, { headers: { 'accept-language': language } }))).text()
-    expect(await fetch('https://one.test/a', 'en')).toBe('1')
-    expect(await fetch('https://one.test/a', 'ja')).toBe('2')
-    expect(await fetch('https://two.test/a', 'en')).toBe('3')
-    expect(await fetch('https://one.test/b', 'en')).toBe('4')
-    expect(await fetch('https://one.test/a', 'en')).toBe('1')
+    await expect(fetch('https://one.test/a', 'en')).resolves.toBe('1')
+    await expect(fetch('https://one.test/a', 'ja')).resolves.toBe('2')
+    await expect(fetch('https://two.test/a', 'en')).resolves.toBe('3')
+    await expect(fetch('https://one.test/b', 'en')).resolves.toBe('4')
+    await expect(fetch('https://one.test/a', 'en')).resolves.toBe('1')
   })
+
   test('evicts the least recently used entry', async () => {
     const { handler } = await fixture()
     const fetch = async (path: string) => (await handler(new Request(`https://example.com/${path}`))).text()
-    expect(await fetch('a')).toBe('1')
-    expect(await fetch('b')).toBe('2')
-    expect(await fetch('a')).toBe('1')
-    expect(await fetch('c')).toBe('3')
-    expect(await fetch('b')).toBe('4')
+    await expect(fetch('a')).resolves.toBe('1')
+    await expect(fetch('b')).resolves.toBe('2')
+    await expect(fetch('a')).resolves.toBe('1')
+    await expect(fetch('c')).resolves.toBe('3')
+    await expect(fetch('b')).resolves.toBe('4')
   })
+
   test.each([
     { authorization: 'Bearer x' },
     { cookie: 'id=x' },
@@ -92,15 +97,17 @@ describe('ResponseCache', () => {
   ])('bypasses sensitive or conditional request %j', async (headers) => {
     const { handler } = await fixture()
     const request = () => new Request('https://example.com/', { headers })
-    expect(await (await handler(request())).text()).toBe('1')
-    expect(await (await handler(request())).text()).toBe('2')
+    await expect((await handler(request())).text()).resolves.toBe('1')
+    await expect((await handler(request())).text()).resolves.toBe('2')
   })
+
   test.each(['POST', 'HEAD', 'QUERY'])('bypasses %s methods', async (method) => {
     const { handler, count } = await fixture()
     await handler(new Request('https://example.com/', { method }))
     await handler(new Request('https://example.com/', { method }))
     expect(count()).toBe(2)
   })
+
   test.each([
     { 'cache-control': 'private' },
     { 'cache-control': 'no-store' },
@@ -125,8 +132,9 @@ describe('ResponseCache', () => {
       cache.middleware(Effect.sync(() => HttpServerResponse.text(String(++count), { headers }))),
     )
     await handler(new Request('https://example.com/'))
-    expect(await (await handler(new Request('https://example.com/'))).text()).toBe('2')
+    await expect((await handler(new Request('https://example.com/'))).text()).resolves.toBe('2')
   })
+
   test.each([
     HttpServerResponse.stream(Stream.make(new Uint8Array([1]))),
     HttpServerResponse.formData(new FormData()),
@@ -148,6 +156,7 @@ describe('ResponseCache', () => {
     await handler(new Request('https://example.com/'))
     expect(count).toBe(2)
   })
+
   test('clones stored bytes on insertion and each hit', async () => {
     const bytes = new Uint8Array([1, 2])
     const cache = await Effect.runPromise(ResponseCache.make(options))
@@ -164,12 +173,13 @@ describe('ResponseCache', () => {
     bytes[0] = 9
     const first = await run()
     if (first.body._tag !== 'Uint8Array') throw new Error('Expected bytes')
-    expect([...first.body.body]).toEqual([1, 2])
+    expect([...first.body.body]).toStrictEqual([1, 2])
     first.body.body[0] = 8
     const second = await run()
     if (second.body._tag !== 'Uint8Array') throw new Error('Expected bytes')
-    expect([...second.body.body]).toEqual([1, 2])
+    expect([...second.body.body]).toStrictEqual([1, 2])
   })
+
   test('does not repopulate after invalidating an in-flight miss', async () => {
     const result = await Effect.runPromise(
       Effect.gen(function* () {
@@ -205,6 +215,7 @@ describe('ResponseCache', () => {
     expect(result.hit).toBe('2')
     expect(result.fresh).toBe('2')
   })
+
   test.each([false, true])(
     'expires subsecond-aged Date responses exactly at freshness boundary, delayed=%s',
     async (delayed) => {
@@ -233,14 +244,15 @@ describe('ResponseCache', () => {
           )
           .pipe(Effect.provideService(Clock.Clock, clock)),
       )
-      expect(await (await handler(new Request('https://example.com/'))).text()).toBe('1')
+      await expect((await handler(new Request('https://example.com/'))).text()).resolves.toBe('1')
       const hit = await handler(new Request('https://example.com/'))
-      expect(await hit.text()).toBe('1')
+      await expect(hit.text()).resolves.toBe('1')
       expect(hit.headers.get('age')).toBe('0')
       now = 1000
-      expect(await (await handler(new Request('https://example.com/'))).text()).toBe('2')
+      await expect((await handler(new Request('https://example.com/'))).text()).resolves.toBe('2')
     },
   )
+
   test.each([
     [1999.999, '1'],
     [4503599627370401000, '4503599627370401'],
@@ -266,9 +278,10 @@ describe('ResponseCache', () => {
     await handler(new Request('https://example.com/'))
     now = elapsed
     const hit = await handler(new Request('https://example.com/'))
-    expect(await hit.text()).toBe('cached')
+    await expect(hit.text()).resolves.toBe('cached')
     expect(hit.headers.get('age')).toBe(expected)
   })
+
   test('uses injected Clock for Age and max-age expiry', async () => {
     let now = 0
     const clock: Clock.Clock = {
@@ -295,8 +308,8 @@ describe('ResponseCache', () => {
     now = 2000
     const hit = await handler(new Request('https://example.com/'))
     expect(hit.headers.get('age')).toBe('3')
-    expect(await hit.text()).toBe('1')
+    await expect(hit.text()).resolves.toBe('1')
     now = 3000
-    expect(await (await handler(new Request('https://example.com/'))).text()).toBe('2')
+    await expect((await handler(new Request('https://example.com/'))).text()).resolves.toBe('2')
   })
 })

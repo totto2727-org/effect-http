@@ -9,7 +9,7 @@ import * as HttpDate from './internal/httpDate.ts'
 const Tags = Data.taggedEnum<Etag.Etag>()
 const etag = Tags.Strong({ value: 'a,b' })
 
-describe('ConditionalRequest', () => {
+describe('conditional requests', () => {
   test('distinguishes parsed values from unchecked input without breaking Effect interoperability', () => {
     type ParsedEtag = NonNullable<ReturnType<typeof ConditionalRequest.parseEtag>>
     type ParsedDate = Option.Option.Value<ReturnType<typeof HttpDate.parse>>
@@ -19,17 +19,20 @@ describe('ConditionalRequest', () => {
     expectTypeOf<DateTime.Utc>().not.toExtend<ParsedDate>()
     expectTypeOf<string>().not.toExtend<ParsedDate>()
   })
+
   test('parses Effect tags and distinguishes weak and strong comparison', () => {
-    expect(ConditionalRequest.parseEtag('W/"a,b"')).toEqual(Tags.Weak({ value: 'a,b' }))
+    expect(ConditionalRequest.parseEtag('W/"a,b"')).toStrictEqual(Tags.Weak({ value: 'a,b' }))
     expect(ConditionalRequest.parseEtag('"bad\n"')).toBeUndefined()
     expect(ConditionalRequest.matches(etag, Tags.Weak({ value: 'a,b' }))).toBe(true)
     expect(ConditionalRequest.matches(etag, Tags.Weak({ value: 'a,b' }), true)).toBe(false)
   })
+
   test.each(['GET', 'HEAD'])('returns 304 for weak matching %s retrieval', (method) => {
     expect(ConditionalRequest.evaluate({ method, etag, headers: { 'if-none-match': '"other", W/"a,b"' } })).toBe(
       'NotModified',
     )
   })
+
   test('protects unsafe writes through pre-handler evaluation', () => {
     expect(ConditionalRequest.evaluate({ method: 'PUT', etag, headers: { 'if-match': 'W/"a,b"' } })).toBe(
       'PreconditionFailed',
@@ -41,9 +44,11 @@ describe('ConditionalRequest', () => {
       'Proceed',
     )
   })
+
   test('does not turn malformed lists into a match', () => {
     expect(ConditionalRequest.evaluate({ method: 'GET', etag, headers: { 'if-none-match': '"a,b",' } })).toBe('Proceed')
   })
+
   test.each(['"a,b", garbage', 'garbage, "a,b"', '"a,b",,"other"', '"a,b" , \t'])(
     'rejects an entire malformed list even when it contains a match: %s',
     (value) => {
@@ -53,6 +58,7 @@ describe('ConditionalRequest', () => {
       )
     },
   )
+
   test('accepts 64 quoted tags, including opaque commas, without accepting a 65th', () => {
     const allowed = Array(63).fill('"other"').concat('W/"a,b"').join(',')
     expect(ConditionalRequest.evaluate({ method: 'GET', etag, headers: { 'if-none-match': allowed } })).toBe(
@@ -62,13 +68,15 @@ describe('ConditionalRequest', () => {
       ConditionalRequest.evaluate({ method: 'GET', etag, headers: { 'if-none-match': `${allowed},"last"` } }),
     ).toBe('Proceed')
   })
+
   test('counts the entire ETag including quotes and the weak prefix at the byte limit', () => {
     const opaque = String.repeat(8188)('é')
-    expect(ConditionalRequest.parseEtag(`W/"${opaque}"`)).toEqual(Tags.Weak({ value: opaque }))
+    expect(ConditionalRequest.parseEtag(`W/"${opaque}"`)).toStrictEqual(Tags.Weak({ value: opaque }))
     expect(ConditionalRequest.parseEtag(`W/"${opaque}x"`)).toBeUndefined()
-    expect(ConditionalRequest.parseEtag(`"${opaque}xx"`)).toEqual(Tags.Strong({ value: `${opaque}xx` }))
-    expect(ConditionalRequest.parseEtag('""')).toEqual(Tags.Strong({ value: '' }))
+    expect(ConditionalRequest.parseEtag(`"${opaque}xx"`)).toStrictEqual(Tags.Strong({ value: `${opaque}xx` }))
+    expect(ConditionalRequest.parseEtag('""')).toStrictEqual(Tags.Strong({ value: '' }))
   })
+
   test.each(['"a,b", "bad tag"', '"a,b", "bad\ttag"', '"a,b", w/"other"', '"a,b", "\u007F"', '"a,b", "Ā"'])(
     'rejects a match followed by a token with invalid wire format: %s',
     (value) => {
@@ -77,6 +85,7 @@ describe('ConditionalRequest', () => {
       )
     },
   )
+
   test('throws generated configuration errors rather than plain errors', () => {
     expect(() => ConditionalRequest.middleware({ maxBodyBytes: -1 })).toThrow(ConditionalRequest.ConfigError)
     expect(() =>
@@ -98,6 +107,7 @@ describe('ConditionalRequest', () => {
       ),
     ).toThrow(ConditionalRequest.ConfigError)
   })
+
   test('gives If-None-Match precedence over modification time', () => {
     expect(
       ConditionalRequest.evaluate({
@@ -108,18 +118,21 @@ describe('ConditionalRequest', () => {
       }),
     ).toBe('Proceed')
   })
+
   test.each(['"a,b"\n', '"a,b"\r', '"' + 'x'.repeat(8192) + '"'])(
     'rejects non-exact or oversized ETags %#',
     (value) => {
       expect(ConditionalRequest.parseEtag(value)).toBeUndefined()
     },
   )
+
   test.each(['"a,b"\n', '\u00a0"a,b"', Array(65).fill('"a,b"').join(','), '"' + 'x'.repeat(8192) + '"'])(
     'never matches malformed or oversized lists %#',
     (value) => {
       expect(ConditionalRequest.evaluate({ method: 'GET', etag, headers: { 'if-none-match': value } })).toBe('Proceed')
     },
   )
+
   test.each([
     'Tue, 31 Feb 2026 00:00:00 GMT',
     'Mon, 01 Jan 2025 00:00:00 GMT',
@@ -134,6 +147,7 @@ describe('ConditionalRequest', () => {
       }),
     ).toBe('Proceed')
   })
+
   test('uses the canonical Last-Modified date in a real conditional HTTP response', async () => {
     const lastModified = 'Wed, 01 Jan 2025 00:00:00 GMT'
     const handler = HttpEffect.toWebHandler(
@@ -148,6 +162,7 @@ describe('ConditionalRequest', () => {
     expect(matched.headers.get('last-modified')).toBe(lastModified)
     expect((await request('Thu, 01 Jan 2025 00:00:00 GMT')).status).toBe(200)
   })
+
   test.each(['Sat, 01 Jan 0000 00:00:00 GMT', 'Mon, 01 Jan 0001 00:00:00 GMT', 'Thu, 01 Jan 0099 00:00:00 GMT'])(
     'ignores low-year preconditions without broadening the accepted date grammar: %s',
     (value) => {
@@ -160,6 +175,7 @@ describe('ConditionalRequest', () => {
       ).toBe('Proceed')
     },
   )
+
   test.each([
     ['GET', 'if-none-match', 304],
     ['PUT', 'if-match', 412],
@@ -181,8 +197,9 @@ describe('ConditionalRequest', () => {
     expect(result.status).toBe(status)
     expect(result.headers.get('set-cookie')).toContain('session=value')
     expect(result.headers.get('content-encoding')).toBe(status === 304 ? 'gzip' : null)
-    expect(await result.text()).toBe('')
+    await expect(result.text()).resolves.toBe('')
   })
+
   test('does not invent an empty-body tag for HEAD', async () => {
     const handler = HttpEffect.toWebHandler(
       ConditionalRequest.middleware({ maxBodyBytes: 10 })(
@@ -198,6 +215,7 @@ describe('ConditionalRequest', () => {
     expect(response.status).toBe(200)
     expect(response.headers.get('etag')).toBeNull()
   })
+
   test('applies explicit validators on HEAD without hashing', async () => {
     const handler = HttpEffect.toWebHandler(
       ConditionalRequest.middleware({ maxBodyBytes: 10 })(
@@ -212,6 +230,7 @@ describe('ConditionalRequest', () => {
       ).status,
     ).toBe(304)
   })
+
   test('validates final representations after real Effect compression', async () => {
     const platform = HttpPlatform.layer.pipe(Layer.provide(FileSystem.layerNoop({})))
     const handler = HttpEffect.toWebHandler(
@@ -239,6 +258,7 @@ describe('ConditionalRequest', () => {
     expect(unchanged.status).toBe(304)
     expect(unchanged.headers.get('vary')).toContain('Accept-Encoding')
   })
+
   test('preserves compression metadata for explicit weak validators on real compressed304', async () => {
     const platform = HttpPlatform.layer.pipe(Layer.provide(FileSystem.layerNoop({})))
     const handler = HttpEffect.toWebHandler(
@@ -255,8 +275,9 @@ describe('ConditionalRequest', () => {
     expect(response.status).toBe(304)
     expect(response.headers.get('content-encoding')).toBe('gzip')
     expect(response.headers.get('vary')).toContain('Accept-Encoding')
-    expect(await response.text()).toBe('')
+    await expect(response.text()).resolves.toBe('')
   })
+
   test('hashes bounded in-memory bytes with the caller-provided crypto service and preserves 304 metadata', async () => {
     const handler = HttpEffect.toWebHandler(
       ConditionalRequest.middleware({ maxBodyBytes: 10 })(
@@ -272,12 +293,13 @@ describe('ConditionalRequest', () => {
     expect(value).toMatch(/^"[a-f0-9]{64}"$/u)
     const response = await handler(new Request('https://example.com/', { headers: { 'if-none-match': value ?? '' } }))
     expect(response.status).toBe(304)
-    expect(await response.text()).toBe('')
+    await expect(response.text()).resolves.toBe('')
     expect(response.headers.get('cache-control')).toBe('public, max-age=60')
     expect(response.headers.get('vary')).toBe('accept')
     expect(response.headers.get('content-location')).toBe('/x')
     expect(response.headers.get('content-length')).toBeNull()
   })
+
   test('respects an existing validator', async () => {
     const handler = HttpEffect.toWebHandler(
       ConditionalRequest.middleware({ maxBodyBytes: 1 })(
@@ -288,6 +310,7 @@ describe('ConditionalRequest', () => {
       (await handler(new Request('https://example.com/', { headers: { 'if-none-match': '"existing"' } }))).status,
     ).toBe(304)
   })
+
   test.each([
     HttpServerResponse.text('oversized'),
     HttpServerResponse.stream(Stream.make(new Uint8Array([1]))),

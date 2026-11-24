@@ -1,3 +1,4 @@
+import { live } from '@effect/vitest'
 import { Array as Arr, Effect, Option, Result, String as Str } from 'effect'
 import { HttpEffect, HttpServerRequest, HttpServerResponse } from 'effect/http'
 import { describe, expect, expectTypeOf, test } from 'vite-plus/test'
@@ -10,7 +11,7 @@ const choose = (kind: Accepts.Kind, header: string | null | undefined, supports:
   return Option.getOrNull(result.success)
 }
 
-describe('Accepts media negotiation', () => {
+describe('accepts media negotiation', () => {
   test('uses specificity to determine effective quality before ranking offers', () => {
     expect(
       choose('mediaType', 'text/*;q=1,text/html;q=0.1,application/json;q=0.5', ['text/html', 'application/json']),
@@ -81,7 +82,7 @@ describe('Accepts media negotiation', () => {
   })
 })
 
-describe('Accepts language, charset and encoding policies', () => {
+describe('accepts language, charset and encoding policies', () => {
   test('uses language basic filtering, with specific exclusions', () => {
     expect(choose('language', 'EN;q=0.7,fr;q=0.8', ['en-US', 'FR-ca'])).toBe('FR-ca')
     expect(choose('language', 'en-US', ['en'])).toBeNull()
@@ -109,21 +110,21 @@ describe('Accepts language, charset and encoding policies', () => {
       const supports = kind === 'mediaType' ? ['text/html'] : ['en']
       expect(choose(kind, null, supports)).toBe(supports[0])
       expect(choose(kind, undefined, supports)).toBe(supports[0])
-      expect(Accepts.parse(kind, undefined)).toEqual(Accepts.parse(kind, null))
+      expect(Accepts.parse(kind, undefined)).toStrictEqual(Accepts.parse(kind, null))
       expect(choose(kind, '', supports)).toBeNull()
       expect(choose(kind, ' \t ', supports)).toBeNull()
     }
     expect(choose('encoding', '', ['gzip', 'identity'])).toBe('identity')
-    expect(Accepts.parse('mediaType', null)).toEqual(
+    expect(Accepts.parse('mediaType', null)).toStrictEqual(
       Result.succeed({ kind: 'mediaType', missing: true, preferences: [] }),
     )
-    expect(Accepts.parse('mediaType', '')).toEqual(
+    expect(Accepts.parse('mediaType', '')).toStrictEqual(
       Result.succeed({ kind: 'mediaType', missing: false, preferences: [] }),
     )
   })
 })
 
-describe('Accepts strict parsing', () => {
+describe('accepts strict parsing', () => {
   test.each([
     'text/html;q=2',
     'text/html;q=-1',
@@ -185,7 +186,7 @@ describe('Accepts strict parsing', () => {
   })
 
   test('returns parsed parameters and numeric qualities', () => {
-    expect(Accepts.parse('mediaType', 'TEXT/HTML;Charset="UTF-8";q=0.125')).toEqual(
+    expect(Accepts.parse('mediaType', 'TEXT/HTML;Charset="UTF-8";q=0.125')).toStrictEqual(
       Result.succeed({
         kind: 'mediaType',
         missing: false,
@@ -220,7 +221,7 @@ describe('Accepts strict parsing', () => {
     expect(choose('mediaType', `${offer};q=1.`, ['text/html', offer])).toBe(offer)
     const parsed = Accepts.parse('mediaType', offer)
     const parameters = Result.isSuccess(parsed) && parsed.success.preferences[0]?.parameters
-    expect(parameters).toEqual({
+    expect(parameters).toStrictEqual({
       profile: 'a,;\\"b',
       ['__proto__']: 'x',
       constructor: 'y',
@@ -233,7 +234,7 @@ describe('Accepts strict parsing', () => {
   })
 })
 
-describe('Accepts request adapters', () => {
+describe('accepts request adapters', () => {
   test.each([
     ['text/html;q=0,application/json', 200, 'application/json'],
     ['text/*;q=0,application/json;q=0,*/*', 406, 'Not acceptable'],
@@ -253,7 +254,7 @@ describe('Accepts request adapters', () => {
     )
     const response = await handler(new Request('https://example.com/', { headers: { Accept: header } }))
     expect(response.status).toBe(status)
-    expect(await response.text()).toBe(body)
+    await expect(response.text()).resolves.toBe(body)
   })
 
   test('reads Web Headers and Request without consuming the body', async () => {
@@ -262,43 +263,41 @@ describe('Accepts request adapters', () => {
       headers: { Accept: 'application/json', 'Accept-Language': 'fr' },
       body: 'untouched',
     })
-    expect(Accepts.negotiateHeaders('language', request.headers, ['en', 'fr'])).toEqual(
+    expect(Accepts.negotiateHeaders('language', request.headers, ['en', 'fr'])).toStrictEqual(
       Result.succeed(Option.some('fr')),
     )
-    expect(Accepts.negotiateRequest('mediaType', request, ['text/html', 'application/json'])).toEqual(
+    expect(Accepts.negotiateRequest('mediaType', request, ['text/html', 'application/json'])).toStrictEqual(
       Result.succeed(Option.some('application/json')),
     )
-    expect(await request.text()).toBe('untouched')
+    await expect(request.text()).resolves.toBe('untouched')
   })
 
-  test('negotiates through the real Effect request service', async () => {
-    const request = HttpServerRequest.fromWeb(
-      new Request('https://example.com/', {
-        headers: { Accept: 'text/*;q=1,text/html;q=0.1,application/json;q=0.5' },
-      }),
-    )
-    const selected = await Effect.runPromise(
-      Accepts.negotiateEffect('mediaType', ['text/html', 'application/json']).pipe(
-        Effect.provideService(HttpServerRequest.HttpServerRequest, request),
-      ),
-    )
-    expect(selected).toEqual(Option.some('application/json'))
-  })
-
-  test('preserves parse failures and no-match through the Effect adapter', async () => {
-    for (const [header, failure] of [
-      ['text/html;q=oops', true],
-      ['text/html;q=0,*/*;q=1', false],
-    ] satisfies [string, boolean][]) {
-      const request = HttpServerRequest.fromWeb(new Request('https://example.com/', { headers: { Accept: header } }))
-      const result = await Effect.runPromise(
-        Accepts.negotiateEffect('mediaType', ['text/html']).pipe(
-          Effect.provideService(HttpServerRequest.HttpServerRequest, request),
-          Effect.result,
-        ),
+  live('negotiates through the real Effect request service', () =>
+    Effect.gen(function* () {
+      const request = HttpServerRequest.fromWeb(
+        new Request('https://example.com/', {
+          headers: { Accept: 'text/*;q=1,text/html;q=0.1,application/json;q=0.5' },
+        }),
       )
-      expect(Result.isFailure(result)).toBe(failure)
-      if (Result.isSuccess(result)) expect(result.success).toEqual(Option.none())
-    }
-  })
+      const selected = yield* Accepts.negotiateEffect('mediaType', ['text/html', 'application/json']).pipe(
+        Effect.provideService(HttpServerRequest.HttpServerRequest, request),
+      )
+      expect(selected).toStrictEqual(Option.some('application/json'))
+    }),
+  )
+
+  live.each([
+    { expectedFailure: true, header: 'text/html;q=oops' },
+    { expectedFailure: false, header: 'text/html;q=0,*/*;q=1' },
+  ])('preserves the parse outcome through the Effect adapter: $header', ({ header, expectedFailure }) =>
+    Effect.gen(function* () {
+      const request = HttpServerRequest.fromWeb(new Request('https://example.com/', { headers: { Accept: header } }))
+      const result = yield* Accepts.negotiateEffect('mediaType', ['text/html']).pipe(
+        Effect.provideService(HttpServerRequest.HttpServerRequest, request),
+        Effect.result,
+      )
+      expect(Result.isFailure(result)).toBe(expectedFailure)
+      expect(Result.getSuccess(result)).toStrictEqual(expectedFailure ? Option.none() : Option.some(Option.none()))
+    }),
+  )
 })

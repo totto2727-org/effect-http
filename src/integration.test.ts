@@ -42,21 +42,21 @@ test('negotiation, public cache, validators and security policies compose throug
     new Request('https://example.com/content', { headers: { 'accept-language': language, ...headers } })
 
   const english = await handler(request('en'))
-  expect(await english.text()).toBe('en')
+  await expect(english.text()).resolves.toBe('en')
   const englishEtag = english.headers.get('etag')
   expect(englishEtag).toMatch(/^"[a-f0-9]{64}"$/u)
   const hit = await handler(request('en'))
-  expect(await hit.text()).toBe('en')
+  await expect(hit.text()).resolves.toBe('en')
   expect(hit.headers.get('age')).toBe('0')
   expect(hit.headers.get('etag')).toBe(englishEtag)
   expect(executions).toBe(1)
 
   const japanese = await handler(request('ja'))
-  expect(await japanese.text()).toBe('ja')
+  await expect(japanese.text()).resolves.toBe('ja')
   expect(japanese.headers.get('etag')).not.toBe(englishEtag)
   const unchanged = await handler(request('en', { 'if-none-match': englishEtag ?? '' }))
   expect(unchanged.status).toBe(304)
-  expect(await unchanged.text()).toBe('')
+  await expect(unchanged.text()).resolves.toBe('')
   expect(unchanged.headers.get('etag')).toBe(englishEtag)
   expect(unchanged.headers.get('cache-control')).toBe('public, max-age=30')
   expect(unchanged.headers.get('x-content-type-options')).toBe('nosniff')
@@ -68,7 +68,7 @@ test('negotiation, public cache, validators and security policies compose throug
   expect(executions).toBe(4)
 })
 
-test('CSRF rejection precedes handler work and security headers also apply to rejection responses', async () => {
+test('csrf rejection precedes handler work and security headers also apply to rejection responses', async () => {
   let writes = 0
   const handler = HttpEffect.toWebHandler(
     Effect.sync(() => {

@@ -4,15 +4,16 @@ import { describe, expect, test } from 'vite-plus/test'
 
 import * as SecureHeaders from './secureHeaders.ts'
 
-describe('SecureHeaders pure policies', () => {
+describe('secureHeaders pure policies', () => {
   test.each(["'self'\n", "'self'\r", "'self'\r\n"])('rejects terminal CSP controls: %j', (value) => {
     expect(() => SecureHeaders.serializeContentSecurityPolicy({ 'default-src': [value] })).toThrow(
       SecureHeaders.ConfigError,
     )
   })
+
   test('has compact document-isolation defaults without HTTPS or CSP assumptions', () => {
     expect(Object.isFrozen(SecureHeaders.headers())).toBe(true)
-    expect(SecureHeaders.headers()).toEqual({
+    expect(SecureHeaders.headers()).toStrictEqual({
       'x-content-type-options': 'nosniff',
       'x-frame-options': 'DENY',
       'referrer-policy': 'no-referrer',
@@ -20,6 +21,7 @@ describe('SecureHeaders pure policies', () => {
       'cross-origin-resource-policy': 'same-origin',
     })
   })
+
   test('supports explicit resource sharing, popup compatibility, and omitted policies', () => {
     expect(
       SecureHeaders.headers({
@@ -28,13 +30,14 @@ describe('SecureHeaders pure policies', () => {
         crossOriginOpenerPolicy: 'same-origin-allow-popups',
         crossOriginResourcePolicy: 'cross-origin',
       }),
-    ).toEqual({
+    ).toStrictEqual({
       'x-content-type-options': 'nosniff',
       'referrer-policy': 'same-origin',
       'cross-origin-opener-policy': 'same-origin-allow-popups',
       'cross-origin-resource-policy': 'cross-origin',
     })
   })
+
   test('serializes typed static CSP and opt-in HSTS', () => {
     expect(
       SecureHeaders.serializeContentSecurityPolicy({
@@ -54,6 +57,7 @@ describe('SecureHeaders pure policies', () => {
     ).toBe('max-age=31536000; includeSubDomains; preload')
     expect(SecureHeaders.headers({ hsts: { maxAge: 0 } })['strict-transport-security']).toBe('max-age=0')
   })
+
   test.each([
     'https://safe.example; script-src *',
     'https://safe.example\r\nX: injected',
@@ -67,6 +71,7 @@ describe('SecureHeaders pure policies', () => {
       SecureHeaders.ConfigError,
     )
   })
+
   test('rejects unknown directives, empty policies, invalid boolean directives, and none mixtures', () => {
     expect(() => SecureHeaders.serializeContentSecurityPolicy({})).toThrow(SecureHeaders.ConfigError)
     expect(() => SecureHeaders.serializeContentSecurityPolicy({ 'default-src': [] })).toThrow(SecureHeaders.ConfigError)
@@ -81,6 +86,7 @@ describe('SecureHeaders pure policies', () => {
       SecureHeaders.ConfigError,
     )
   })
+
   test('reports malformed inputs before otherwise inapplicable CSP and HSTS features', () => {
     expect(() => SecureHeaders.serializeContentSecurityPolicy({ 'upgrade-insecure-requests': [';'] })).toThrow(
       'Invalid CSP value for upgrade-insecure-requests',
@@ -90,6 +96,7 @@ describe('SecureHeaders pure policies', () => {
       'Invalid HSTS configuration',
     )
   })
+
   test('validates policy enums even when JavaScript callers bypass TypeScript', () => {
     // @ts-expect-error Header injection is not a policy enum member.
     expect(() => SecureHeaders.middleware({ referrerPolicy: 'no-referrer\r\nInjected: yes' })).toThrow(
@@ -98,9 +105,11 @@ describe('SecureHeaders pure policies', () => {
     // @ts-expect-error Invalid frame policy is not accepted.
     expect(() => SecureHeaders.headers({ frameOptions: 'ALLOWALL' })).toThrow(SecureHeaders.ConfigError)
   })
+
   test.each([-1, NaN, Infinity, 1.5, Number.MAX_SAFE_INTEGER + 1])('rejects invalid HSTS age %j', (maxAge) => {
     expect(() => SecureHeaders.middleware({ hsts: { maxAge } })).toThrow(SecureHeaders.ConfigError)
   })
+
   test('rejects preload without its prerequisites', () => {
     expect(() => SecureHeaders.headers({ hsts: { maxAge: 10, includeSubDomains: true, preload: true } })).toThrow(
       SecureHeaders.ConfigError,
@@ -111,7 +120,7 @@ describe('SecureHeaders pure policies', () => {
   })
 })
 
-describe('SecureHeaders HTTP middleware', () => {
+describe('secureHeaders HTTP middleware', () => {
   test('applies defaults, overrides insecure app values, and removes X-Powered-By', async () => {
     const app = Effect.succeed(
       HttpServerResponse.text('body', {
@@ -121,13 +130,14 @@ describe('SecureHeaders HTTP middleware', () => {
     )
     const response = await HttpEffect.toWebHandler(SecureHeaders.middleware()(app))(new Request('https://app.example'))
     expect(response.status).toBe(202)
-    expect(await response.text()).toBe('body')
+    await expect(response.text()).resolves.toBe('body')
     expect(response.headers.get('x-powered-by')).toBeNull()
     expect(response.headers.get('x-custom')).toBe('kept')
     for (const [name, value] of Object.entries(SecureHeaders.headers())) expect(response.headers.get(name)).toBe(value)
     expect(response.headers.get('strict-transport-security')).toBeNull()
     expect(response.headers.get('content-security-policy')).toBeNull()
   })
+
   test('applies opt-in CSP and HSTS to real responses', async () => {
     const handler = HttpEffect.toWebHandler(
       SecureHeaders.middleware({
@@ -140,6 +150,7 @@ describe('SecureHeaders HTTP middleware', () => {
     expect(response.headers.get('strict-transport-security')).toBe('max-age=600')
     expect(response.headers.get('content-security-policy')).toBe("default-src 'none'; frame-ancestors 'none'")
   })
+
   test('snapshots mutable configuration at middleware construction', async () => {
     const sources = ["'self'"]
     const policy = SecureHeaders.middleware({ contentSecurityPolicy: { 'default-src': sources } })
@@ -149,6 +160,7 @@ describe('SecureHeaders HTTP middleware', () => {
     )
     expect(response.headers.get('content-security-policy')).toBe("default-src 'self'")
   })
+
   test('preserves error and environment types', () => {
     class Service extends Context.Service<Service, { readonly value: string }>()('SecureHeadersTestService') {}
     const app: Effect.Effect<HttpServerResponse.HttpServerResponse, 'failure', Service> = Effect.flatMap(Service, () =>
