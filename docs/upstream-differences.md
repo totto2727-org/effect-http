@@ -2,12 +2,13 @@
 
 ## Comparison baseline
 
-| Role                                         | Repository                                                                                      | Exact revision                                       |
-| -------------------------------------------- | ----------------------------------------------------------------------------------------------- | ---------------------------------------------------- |
-| Behavioral upstream                          | [honojs/hono](https://github.com/honojs/hono)                                                   | `f6fbaf0299c48eea9e656e03e2ffe7ac755e8823` (4.13.18) |
-| Effect comparison and development dependency | [Effect-TS/effect](https://github.com/Effect-TS/effect)                                         | `3e2030b43e86a60113f2f32671076ff3b1d84ce4` (4.1.4)   |
-| Scope boundary reference                     | [totto2727-org/effront](https://github.com/totto2727-org/effront)                               | `3c8c55c8f99242b0c45c5a672fe3ea22f9e26614`           |
-| Library scaffold                             | [totto2727-org/template-vite-plus-lib](https://github.com/totto2727-org/template-vite-plus-lib) | `93c04d34cbb70971ea1db6790980d22f55ed095e`           |
+| Role                          | Repository                                                                                      | Exact revision                                       |
+| ----------------------------- | ----------------------------------------------------------------------------------------------- | ---------------------------------------------------- |
+| Behavioral upstream           | [honojs/hono](https://github.com/honojs/hono)                                                   | `f6fbaf0299c48eea9e656e03e2ffe7ac755e8823` (4.13.18) |
+| Effect comparison             | [Effect-TS/effect](https://github.com/Effect-TS/effect)                                         | `3e2030b43e86a60113f2f32671076ff3b1d84ce4` (4.1.4)   |
+| Effect development dependency | [Effect-TS/effect](https://github.com/Effect-TS/effect)                                         | `e3aca1f1484e623cee09b7f3fa18d6ff5d66c0e8` (4.1.5)   |
+| Scope boundary reference      | [totto2727-org/effront](https://github.com/totto2727-org/effront)                               | `3c8c55c8f99242b0c45c5a672fe3ea22f9e26614`           |
+| Library scaffold              | [totto2727-org/template-vite-plus-lib](https://github.com/totto2727-org/template-vite-plus-lib) | `93c04d34cbb70971ea1db6790980d22f55ed095e`           |
 
 Hono is the behavioral upstream for selected helpers and middleware policies.
 This repository starts from the Vite library template, not from Hono's Git history.
