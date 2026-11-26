@@ -45,6 +45,7 @@
     "registry": "https://registry.npmjs.org/"
   },
   "devDependencies": {
+    "@effect/vitest": "^4.1.5",
     "@totto2727/gitignore-patterns": "^0.1.0",
     "@totto2727/oxlint": "^0.2.0",
     "@tsconfig/node-ts": "^23.6.5",

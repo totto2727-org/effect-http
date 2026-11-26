@@ -1,95 +1,156 @@
-import { Effect, Option } from 'effect'
+import { live } from '@effect/vitest'
+import { Effect, Option, Ref } from 'effect'
 import { Digest } from 'effect/crypto'
+import type { HttpServerRequest } from 'effect/http'
 import { HttpEffect, HttpServerResponse } from 'effect/http'
-import { expect, test } from 'vite-plus/test'
+import { describe, expect } from 'vite-plus/test'
 
 import * as Accepts from './accepts.ts'
-import * as CacheControl from './cacheControl.ts'
-import * as ConditionalRequest from './conditionalRequest.ts'
+import * as CacheControl from './cache-control.ts'
+import * as ConditionalRequest from './conditional-request.ts'
 import * as Csrf from './csrf.ts'
-import * as ResponseCache from './responseCache.ts'
-import * as SecureHeaders from './secureHeaders.ts'
+import * as ResponseCache from './response-cache.ts'
+// oxlint-disable-next-line import/max-dependencies -- This integration test verifies all six HTTP utilities together.
+import * as SecureHeaders from './secure-headers.ts'
 
-test('negotiation, public cache, validators and security policies compose through real Web requests', async () => {
-  let executions = 0
-  const cache = await Effect.runPromise(
-    ResponseCache.make({
-      publicRoute: true,
-      capacity: 8,
-      ttlMilliseconds: 60_000,
-      maxBodyBytes: 1024,
-      vary: ['accept-language'],
-    }),
-  )
-  const app = Effect.gen(function* () {
+type WebHandler = (request: Request) => Promise<Response>
+const increment = (value: number): number => value + 1
+
+const contentRequest = (language: string, headers: Record<string, string> = {}): Request =>
+  new Request('https://example.com/content', { headers: { 'accept-language': language, ...headers } })
+
+const runGet = (handler: WebHandler, language: string, headers?: Record<string, string>): Effect.Effect<Response> =>
+  Effect.promise(async () => handler(contentRequest(language, headers)))
+
+const readText = (response: Response): Effect.Effect<string> => Effect.promise(async () => response.text())
+
+const negotiatedPage = (
+  executions: Ref.Ref<number>,
+): Effect.Effect<HttpServerResponse.HttpServerResponse, Accepts.ParseError, HttpServerRequest.HttpServerRequest> =>
+  Effect.gen(function* () {
     const language = yield* Accepts.negotiateEffect('language', ['en', 'ja'])
-    executions++
+    yield* Ref.update(executions, increment)
     return HttpServerResponse.text(
       Option.getOrElse(language, () => 'unavailable'),
       { headers: { vary: 'Accept-Language' } },
     )
-  }).pipe(
-    CacheControl.middleware({ public: true, maxAge: 30 }),
+  })
+
+const cachedPage = Effect.gen(function* () {
+  const executions = yield* Ref.make(0)
+  const cache = yield* ResponseCache.make({
+    capacity: 8,
+    maxBodyBytes: 1024,
+    publicRoute: true,
+    ttlMilliseconds: 60_000,
+    vary: ['accept-language'],
+  })
+  const app = negotiatedPage(executions).pipe(
+    CacheControl.middleware({ maxAge: 30, public: true }),
     cache.middleware,
     ConditionalRequest.middleware({ maxBodyBytes: 1024 }),
     Csrf.middleware(),
     SecureHeaders.middleware(),
     Effect.provide(Digest.layerWebCrypto),
-    Effect.catch(() => Effect.succeed(HttpServerResponse.empty({ status: 400 }))),
+    Effect.catchTag('AcceptsParseError', () => Effect.succeed(HttpServerResponse.empty({ status: 400 }))),
   )
-  const handler = HttpEffect.toWebHandler(app)
-  const request = (language: string, headers: Record<string, string> = {}) =>
-    new Request('https://example.com/content', { headers: { 'accept-language': language, ...headers } })
-
-  const english = await handler(request('en'))
-  expect(await english.text()).toBe('en')
-  const englishEtag = english.headers.get('etag')
-  expect(englishEtag).toMatch(/^"[a-f0-9]{64}"$/)
-  const hit = await handler(request('en'))
-  expect(await hit.text()).toBe('en')
-  expect(hit.headers.get('age')).toBe('0')
-  expect(hit.headers.get('etag')).toBe(englishEtag)
-  expect(executions).toBe(1)
-
-  const japanese = await handler(request('ja'))
-  expect(await japanese.text()).toBe('ja')
-  expect(japanese.headers.get('etag')).not.toBe(englishEtag)
-  const unchanged = await handler(request('en', { 'if-none-match': englishEtag ?? '' }))
-  expect(unchanged.status).toBe(304)
-  expect(await unchanged.text()).toBe('')
-  expect(unchanged.headers.get('etag')).toBe(englishEtag)
-  expect(unchanged.headers.get('cache-control')).toBe('public, max-age=30')
-  expect(unchanged.headers.get('x-content-type-options')).toBe('nosniff')
-  expect(unchanged.headers.get('vary')?.toLowerCase()).toContain('accept-language')
-  expect(unchanged.headers.get('vary')?.toLowerCase()).toContain('sec-fetch-site')
-
-  await Effect.runPromise(cache.invalidateAll)
-  await handler(request('en'))
-  expect(executions).toBe(4)
+  return { cache, executions, handler: HttpEffect.toWebHandler(app) }
 })
 
-test('CSRF rejection precedes handler work and security headers also apply to rejection responses', async () => {
-  let writes = 0
-  const handler = HttpEffect.toWebHandler(
-    Effect.sync(() => {
-      writes++
-      return HttpServerResponse.empty({ status: 204 })
-    }).pipe(Csrf.middleware(), SecureHeaders.middleware()),
-  )
-  const denied = await handler(
-    new Request('https://example.com/write', {
-      method: 'POST',
-      headers: { origin: 'https://attacker.test', 'sec-fetch-site': 'same-origin', 'content-type': 'application/json' },
-      body: '{}',
+const englishResponses = Effect.fnUntraced(function* (handler: WebHandler, counter: Ref.Ref<number>) {
+  const initial = yield* runGet(handler, 'en')
+  const body = yield* readText(initial)
+  const hit = yield* runGet(handler, 'en')
+  return {
+    body,
+    etag: initial.headers.get('etag'),
+    executions: yield* Ref.get(counter),
+    hitAge: hit.headers.get('age'),
+    hitBody: yield* readText(hit),
+    hitEtag: hit.headers.get('etag'),
+  }
+})
+
+const localizedAndConditionalResponses = Effect.fnUntraced(function* (handler: WebHandler, etag: string) {
+  const japanese = yield* runGet(handler, 'ja')
+  const japaneseBody = yield* readText(japanese)
+  const unchanged = yield* runGet(handler, 'en', { 'if-none-match': etag })
+  return {
+    conditionalBody: yield* readText(unchanged),
+    conditionalEtag: unchanged.headers.get('etag'),
+    conditionalStatus: unchanged.status,
+    contentOptions: unchanged.headers.get('x-content-type-options'),
+    japaneseBody,
+    japaneseEtagDiffers: japanese.headers.get('etag') !== etag,
+    policy: unchanged.headers.get('cache-control'),
+    varyIncludesPolicies: /^(?=.*accept-language)(?=.*sec-fetch-site)/u.test(
+      unchanged.headers.get('vary')?.toLowerCase() ?? '',
+    ),
+  }
+})
+
+describe('composed GET policies', () => {
+  live('combines negotiation, public caching, validators and security through real Web requests', () =>
+    Effect.gen(function* () {
+      const { cache, executions, handler } = yield* cachedPage
+      const english = yield* englishResponses(handler, executions)
+      expect(english.etag).toMatch(/^"[a-f0-9]{64}"$/u)
+      expect(english).toMatchObject({
+        body: 'en',
+        executions: 1,
+        hitAge: '0',
+        hitBody: 'en',
+        hitEtag: english.etag,
+      })
+      const local = yield* localizedAndConditionalResponses(handler, english.etag ?? '')
+      expect(local).toStrictEqual({
+        conditionalBody: '',
+        conditionalEtag: english.etag,
+        conditionalStatus: 304,
+        contentOptions: 'nosniff',
+        japaneseBody: 'ja',
+        japaneseEtagDiffers: true,
+        policy: 'public, max-age=30',
+        varyIncludesPolicies: true,
+      })
+      yield* cache.invalidateAll
+      yield* runGet(handler, 'en')
+      expect(yield* Ref.get(executions)).toBe(4)
     }),
   )
-  expect(denied.status).toBe(403)
-  expect(denied.headers.get('cache-control')).toBe('no-store')
-  expect(denied.headers.get('x-frame-options')).toBe('DENY')
-  expect(writes).toBe(0)
-  const allowed = await handler(
-    new Request('https://example.com/write', { method: 'POST', headers: { origin: 'https://example.com' } }),
+})
+
+describe('composed write policies', () => {
+  live('checks csrf before handler work and applies security headers to the denial', () =>
+    Effect.gen(function* () {
+      const writes = yield* Ref.make(0)
+      const app = Effect.as(Ref.update(writes, increment), HttpServerResponse.empty({ status: 204 }))
+      const handler = HttpEffect.toWebHandler(app.pipe(Csrf.middleware(), SecureHeaders.middleware()))
+      const denied = yield* Effect.promise(async () =>
+        handler(
+          new Request('https://example.com/write', {
+            body: '{}',
+            headers: {
+              'content-type': 'application/json',
+              origin: 'https://attacker.test',
+              'sec-fetch-site': 'same-origin',
+            },
+            method: 'POST',
+          }),
+        ),
+      )
+      expect({
+        cache: denied.headers.get('cache-control'),
+        frames: denied.headers.get('x-frame-options'),
+        status: denied.status,
+        writes: yield* Ref.get(writes),
+      }).toStrictEqual({ cache: 'no-store', frames: 'DENY', status: 403, writes: 0 })
+      const allowed = yield* Effect.promise(async () =>
+        handler(
+          new Request('https://example.com/write', { headers: { origin: 'https://example.com' }, method: 'POST' }),
+        ),
+      )
+      expect({ status: allowed.status, writes: yield* Ref.get(writes) }).toStrictEqual({ status: 204, writes: 1 })
+    }),
   )
-  expect(allowed.status).toBe(204)
-  expect(writes).toBe(1)
 })

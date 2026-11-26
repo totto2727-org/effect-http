@@ -13,11 +13,11 @@ Prefer stricter, documented security semantics to byte-for-byte Hono compatibili
 | Path                           | Purpose                                                    |
 | ------------------------------ | ---------------------------------------------------------- |
 | `src/accepts.ts`               | Standalone content negotiation and request adapters        |
-| `src/cacheControl.ts`          | Cache policy parsing and formatting                        |
-| `src/conditionalRequest.ts`    | Reusable validators and conditional responses              |
-| `src/responseCache.ts`         | Bounded, explicitly configured response caching            |
+| `src/cache-control.ts`         | Cache policy parsing and formatting                        |
+| `src/conditional-request.ts`   | Reusable validators and conditional responses              |
+| `src/response-cache.ts`        | Bounded, explicitly configured response caching            |
 | `src/csrf.ts`                  | Request-origin and Fetch Metadata policy                   |
-| `src/secureHeaders.ts`         | Response security policy                                   |
+| `src/secure-headers.ts`        | Response security policy                                   |
 | `src/*.test.ts`                | Public-entry-point behavior and real Web handler tests     |
 | `docs/hono-compatibility.md`   | Complete Hono public import-path disposition and strategy  |
 | `docs/upstream-differences.md` | Exact upstream revisions and retained semantic differences |
@@ -64,7 +64,7 @@ Prefer stricter, documented security semantics to byte-for-byte Hono compatibili
 - Do not cache authenticated or cookie-bearing requests by default.
 - Keep cache capacity, lifetime, body limits, variants, and invalidation explicit.
 - Test observable HTTP responses, negative security cases, and direct helper use through the individual public modules.
-- Use camelCase filenames and publish only the six explicit module subpaths. Do not add `src/index.ts` or a root barrel export.
+- Use kebab-case source filenames and publish only the six explicit module subpaths. Do not add `src/index.ts` or a root barrel export.
 - Define format, length, and numeric value constraints as named Schemas. Decode them at boundaries and retain Schema-derived validated types internally. Keep decision logic separate from value constraints.
 - A wrapped cause must be required. Represent failures without a cause as a distinct error, not an optional cause field.
 - Follow `README_TEMPLATE.md` from the Vite+ library scaffold. Give each module one concise example of its most common use, not an exhaustive demonstration of every exported function.

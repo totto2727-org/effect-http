@@ -1,13 +1,15 @@
-import { fileURLToPath } from 'node:url'
+// oxlint-disable-next-line rules/no-node-imports -- Vite+ runs this configuration on Node.
+import { URL } from 'node:url'
 
 import { generateIgnorePatterns } from '@totto2727/gitignore-patterns'
+import preset from '@totto2727/oxlint/preset/library'
 import { defineConfig } from 'vite-plus'
 
 const ignorePatterns = await generateIgnorePatterns(new URL('.', import.meta.url))
 
+// oxlint-disable-next-line import/no-default-export -- Vite+ loads its configuration from the default export.
 export default defineConfig({
   fmt: {
-    ignorePatterns,
     arrowParens: 'always',
     experimentalSortImports: {
       ignoreCase: true,
@@ -15,6 +17,7 @@ export default defineConfig({
       order: 'asc',
     },
     experimentalSortPackageJson: true,
+    ignorePatterns,
     jsxSingleQuote: true,
     printWidth: 120,
     proseWrap: 'preserve',
@@ -22,66 +25,33 @@ export default defineConfig({
     singleQuote: true,
   },
   lint: {
+    ...preset,
+    globals: { FormData: 'readonly', Request: 'readonly' },
     ignorePatterns,
-    jsPlugins: [fileURLToPath(import.meta.resolve('@totto2727/oxlint'))],
-    options: { typeAware: true, typeCheck: true },
-    overrides: [
-      {
-        files: ['src/**/*.ts'],
-        rules: {
-          'no-restricted-globals': [
-            'error',
-            { name: 'Error', message: 'Define custom errors with Effect Data.TaggedError.' },
-            { name: 'TypeError', message: 'Define configuration errors with Effect Data.TaggedError.' },
-            { name: 'Map', message: 'Use Effect HashMap for keyed state.' },
-            { name: 'Set', message: 'Use Effect HashSet for unique values.' },
-          ],
-          'no-restricted-properties': [
-            'error',
-            { object: 'Object', property: 'entries', message: 'Use Effect Record.toEntries.' },
-            { object: 'Object', property: 'fromEntries', message: 'Use Effect Record.fromEntries.' },
-            { object: 'Object', property: 'keys', message: 'Use Effect Record.keys.' },
-            { object: 'Object', property: 'create', message: 'Use Effect Record.empty or tagged constructors.' },
-            { object: 'JSON', property: 'parse', message: 'Decode JSON with Effect Schema.' },
-            { object: 'JSON', property: 'stringify', message: 'Encode JSON with Effect Schema.' },
-          ],
-        },
-      },
-      {
-        files: ['src/**/*.test.ts'],
-        rules: { 'no-restricted-globals': 'off', 'no-restricted-properties': 'off' },
-      },
-    ],
-    rules: {
-      'rules/no-eslint-disable-comments': 'error',
-      'rules/no-jsx-script-tag': 'error',
-      'rules/require-disable-reason': 'error',
-      'rules/require-import-extension': 'error',
-    },
+    options: { ...preset.options, typeCheck: true },
   },
-  test: { include: ['src/**/*.test.ts'] },
   pack: {
-    entry: [
-      'src/accepts.ts',
-      'src/cacheControl.ts',
-      'src/conditionalRequest.ts',
-      'src/csrf.ts',
-      'src/responseCache.ts',
-      'src/secureHeaders.ts',
-    ],
+    clean: true,
+    dts: true,
+    entry: {
+      accepts: 'src/accepts.ts',
+      cacheControl: 'src/cache-control.ts',
+      conditionalRequest: 'src/conditional-request.ts',
+      csrf: 'src/csrf.ts',
+      responseCache: 'src/response-cache.ts',
+      secureHeaders: 'src/secure-headers.ts',
+    },
     format: ['esm'],
     platform: 'neutral',
-    dts: true,
-    clean: true,
   },
   run: {
     tasks: {
       build: {
-        command: 'vp pack',
         cache: {
           input: [{ auto: true }, '!dist/**'],
           output: ['dist/**'],
         },
+        command: 'vp pack',
       },
       check: {
         command: 'vp check',
@@ -98,4 +68,5 @@ export default defineConfig({
       },
     },
   },
+  test: { dir: 'src' },
 })

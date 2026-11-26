@@ -1,22 +1,25 @@
 import { Array, Effect, Result, String } from 'effect'
-import * as HttpEffect from 'effect/http/HttpEffect'
-import * as HttpServerResponse from 'effect/http/HttpServerResponse'
-import { describe, expect, expectTypeOf, it } from 'vite-plus/test'
+import { HttpEffect, HttpServerResponse } from 'effect/http'
+import { describe, expect, expectTypeOf, test } from 'vite-plus/test'
 
-import * as CacheControl from './cacheControl.ts'
+import * as CacheControl from './cache-control.ts'
 
-describe('CacheControl', () => {
-  it.each(['public\n', 'max-age=1\r', 'public\r\n'])('rejects terminal header controls: %j', (input) => {
+const parseError = (input: string): string => Result.getOrThrow(Result.flip(CacheControl.parse(input))).reason
+
+describe('cache-control directives', () => {
+  test.each(['public\n', 'max-age=1\r', 'public\r\n'])('rejects terminal header controls: %j', (input) => {
     expect(Result.isFailure(CacheControl.parse(input))).toBe(true)
   })
-  it('parses and formats typed directives', () => {
+
+  test('parses and formats typed directives', () => {
     const parsed = CacheControl.parse('public, max-age="60", immutable')
-    expect(Result.isSuccess(parsed) && parsed.success).toEqual({ public: true, maxAge: 60, immutable: true })
-    expect(CacheControl.format({ maxStale: true, maxAge: 60, immutable: true, public: true })).toBe(
+    expect(Result.getOrThrow(parsed)).toStrictEqual({ immutable: true, maxAge: 60, public: true })
+    expect(CacheControl.format({ immutable: true, maxAge: 60, maxStale: true, public: true })).toBe(
       'public, immutable, max-age=60, max-stale',
     )
   })
-  it.each([
+
+  test.each([
     'max-age=1, max-age=2',
     'public, private',
     'max-age=-1',
@@ -28,20 +31,24 @@ describe('CacheControl', () => {
   ])('rejects unsafe policy %s', (input) => {
     expect(Result.isFailure(CacheControl.parse(input))).toBe(true)
   })
-  it.each([
+
+  test.each([
     'no-store\n',
     '\rno-store',
-    'no-store\u00a0',
-    'no-store\u000b',
+    'no-store\u00A0',
+    'no-store\u000B',
     String.repeat(8193)('x'),
     Array.join(
-      Array.makeBy(65, (i) => `x${i}`),
+      Array.makeBy(65, (index) => `x${index}`),
       ',',
     ),
   ])('rejects oversized or non-HTTP header syntax %#', (input) => {
     expect(Result.isFailure(CacheControl.parse(input))).toBe(true)
   })
-  it.each([
+})
+
+describe('directive validation precedence', () => {
+  test.each([
     ['public, private, ,', 'Malformed directive'],
     ['max-age=1, MAX-AGE', 'Duplicate max-age'],
     ['max-age=1, MAX-AGE="x"', 'Malformed directive'],
@@ -57,33 +64,39 @@ describe('CacheControl', () => {
     expect(err).toBeInstanceOf(CacheControl.ParseError)
     expect(err.reason).toBe(reason)
   })
-  it('accepts HTTP optional whitespace', () => {
+
+  test('accepts HTTP optional whitespace', () => {
     const parsed = CacheControl.parse('\tpublic ,\tmax-age=60\t')
-    expect(Result.isSuccess(parsed) && parsed.success).toEqual({ public: true, maxAge: 60 })
+    expect(Result.getOrThrow(parsed)).toStrictEqual({ maxAge: 60, public: true })
   })
-  it('applies the header size and directive count ceilings before parsing directive semantics', () => {
-    const parseError = (input: string) => Result.getOrThrow(Result.flip(CacheControl.parse(input))).reason
-    expect(Result.getOrThrow(CacheControl.parse(`public${String.repeat(8186)(' ')}`))).toEqual({ public: true })
+
+  test('applies the header size and directive count ceilings before parsing directive semantics', () => {
+    const maximumLength = CacheControl.parse(`public${String.repeat(8186)(' ')}`)
+    expect(Result.getOrThrow(maximumLength)).toStrictEqual({ public: true })
     expect(parseError(`public${String.repeat(8187)(' ')}`)).toBe('Invalid header bytes or length')
-    expect(parseError(String.repeat(64)('public,') + 'public')).toBe('Too many directives')
-    expect(parseError(String.repeat(63)('public,') + 'public')).toBe('Duplicate public')
+    expect(parseError(`${String.repeat(64)('public,')}public`)).toBe('Too many directives')
+    expect(parseError(`${String.repeat(63)('public,')}public`)).toBe('Duplicate public')
   })
-  it('preserves parsed seconds as readonly numbers distinct from unvalidated config input', () => {
+})
+
+describe('validated directives and middleware', () => {
+  test('preserves parsed seconds as readonly numbers distinct from unvalidated config input', () => {
     const parsed = Result.getOrThrow(CacheControl.parse('max-age="00060", min-fresh=9007199254740991, max-stale'))
-    expect(parsed).toEqual({ maxAge: 60, minFresh: 9007199254740991, maxStale: true })
+    expect(parsed).toStrictEqual({ maxAge: 60, maxStale: true, minFresh: Number.MAX_SAFE_INTEGER })
     expectTypeOf(parsed.maxAge).toExtend<number | undefined>()
     expectTypeOf<number>().not.toExtend<typeof parsed.maxAge>()
     expect(CacheControl.format(parsed)).toBe('max-age=60, min-fresh=9007199254740991, max-stale')
   })
-  it('rejects invalid output configuration', () => {
+
+  test('rejects invalid output configuration', () => {
     expect(() => CacheControl.format({ maxAge: -1 })).toThrow(CacheControl.ConfigError)
   })
-  it('sets policy on an observable response', async () => {
-    const handler = HttpEffect.toWebHandler(
-      CacheControl.middleware({ noStore: true })(Effect.succeed(HttpServerResponse.text('ok'))),
-    )
+
+  test('sets policy on an observable response', async () => {
+    const responseEffect = Effect.succeed(HttpServerResponse.text('ok'))
+    const handler = HttpEffect.toWebHandler(CacheControl.middleware({ noStore: true })(responseEffect))
     const response = await handler(new Request('https://example.com/'))
     expect(response.headers.get('cache-control')).toBe('no-store')
-    expect(await response.text()).toBe('ok')
+    await expect(response.text()).resolves.toBe('ok')
   })
 })

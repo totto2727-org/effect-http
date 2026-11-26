@@ -2,8 +2,9 @@ import { Array, Data, Effect, Number, Option, Predicate, Record, Schema } from '
 import { HttpMiddleware, HttpServerResponse } from 'effect/http'
 
 /** Static CSP only. Generate application-specific randomness outside this module. */
-export type ContentSecurityPolicy = Partial<Readonly<Record<CspDirective, readonly string[]>>>
+export type ContentSecurityPolicy = Partial<Readonly<Record<CspDirective, Readonly<string[]>>>>
 
+/* oxlint-disable rules/no-readonly -- The exported interface preserves declaration merging and immutable options. */
 export interface Config {
   readonly frameOptions?: typeof FrameOptions.Type | false
   readonly referrerPolicy?: typeof ReferrerPolicy.Type | false
@@ -13,9 +14,10 @@ export interface Config {
   readonly hsts?: { readonly maxAge: number; readonly includeSubDomains?: boolean; readonly preload?: boolean }
   readonly contentSecurityPolicy?: ContentSecurityPolicy
 }
+/* oxlint-enable rules/no-readonly */
 
-export class ConfigError extends Data.TaggedError('ConfigError')<{ readonly message?: string }> {
-  constructor(message?: string) {
+export class ConfigError extends Data.TaggedError('ConfigError')<{ message?: string }> {
+  public constructor(message?: string) {
     super(Predicate.isNullish(message) ? {} : { message })
   }
 }
@@ -46,7 +48,7 @@ const CspDirectiveName = Schema.Literals([
 ])
 export type CspDirective = typeof CspDirectiveName.Type
 
-const CspToken = Schema.String.check(Schema.isPattern(/^(?:(?![;,])[\x21-\x7e])+$(?![\s\S])/u)).pipe(
+const CspToken = Schema.String.check(Schema.isPattern(/^(?:(?![;,])[\u0021-\u007E])+$(?![\s\S])/u)).pipe(
   Schema.brand('CspToken'),
 )
 const FrameOptions = Schema.Literals(['DENY', 'SAMEORIGIN'])
@@ -58,33 +60,46 @@ const ReferrerPolicy = Schema.Literals([
 ])
 const CrossOriginOpenerPolicy = Schema.Literals(['same-origin', 'same-origin-allow-popups', 'unsafe-none'])
 const CrossOriginResourcePolicy = Schema.Literals(['same-origin', 'same-site', 'cross-origin'])
-const HstsMaxAge = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)).pipe(Schema.brand('HstsMaxAge'))
+const HstsMaxAge = Schema.Natural.pipe(Schema.brand('HstsMaxAge'))
 const HstsFields = Schema.Struct({
-  maxAge: HstsMaxAge,
   includeSubDomains: Schema.NullishOr(Schema.Boolean),
+  maxAge: HstsMaxAge,
   preload: Schema.NullishOr(Schema.Boolean),
 })
 
 const decodeCspDirective = Schema.decodeUnknownOption(CspDirectiveName)
 const decodeCspToken = Schema.decodeUnknownOption(CspToken)
+const decodeFrameOptions = Schema.decodeUnknownOption(FrameOptions)
+const decodeReferrerPolicy = Schema.decodeUnknownOption(ReferrerPolicy)
+const decodeCrossOriginOpenerPolicy = Schema.decodeUnknownOption(CrossOriginOpenerPolicy)
+const decodeCrossOriginResourcePolicy = Schema.decodeUnknownOption(CrossOriginResourcePolicy)
 const decodeHsts = Schema.decodeUnknownOption(HstsFields)
 
-const formatCspDirective = (name: CspDirective, values: readonly (typeof CspToken.Type)[]): string => {
+const singleCspSource = 1
+const formatCspDirective = (name: CspDirective, values: Readonly<(typeof CspToken.Type)[]>): string => {
   const isValueless = name === 'upgrade-insecure-requests' || name === 'block-all-mixed-content'
-  if (isValueless && !Array.isReadonlyArrayEmpty(values)) throw new ConfigError(`${name} does not accept values`)
+  if (isValueless && !Array.isReadonlyArrayEmpty(values)) {
+    throw new ConfigError(`${name} does not accept values`)
+  }
   if (!isValueless && name !== 'sandbox' && Array.isReadonlyArrayEmpty(values)) {
     throw new ConfigError(`${name} requires a source expression`)
   }
-  if (Array.some(values, (value) => value === "'none'") && Array.length(values) !== 1) {
+  if (Array.some(values, (value) => value === "'none'") && Array.length(values) !== singleCspSource) {
     throw new ConfigError("'none' must be the only source expression")
   }
   return Array.join([name, ...values], ' ')
 }
 
-/** Throws ConfigError for invalid directives or tokens, including delimiter and header injection. */
+/**
+ * Serialize a static Content Security Policy. Throws ConfigError for invalid directives or tokens.
+ * @param {ContentSecurityPolicy} policy - Directives and source expressions.
+ * @returns {string} The Content-Security-Policy header value.
+ */
 export const serializeContentSecurityPolicy = (policy: ContentSecurityPolicy): string => {
-  const entries = Record.toEntries<string, readonly string[] | undefined>(policy)
-  if (Array.isArrayEmpty(entries)) throw new ConfigError('Content Security Policy must contain at least one directive')
+  const entries = Record.toEntries<string, Readonly<string[]> | undefined>(policy)
+  if (Array.isArrayEmpty(entries)) {
+    throw new ConfigError('Content Security Policy must contain at least one directive')
+  }
   const serialized = Array.map(entries, ([name, values]) => {
     const directive = decodeCspDirective(name)
     if (Option.isNone(directive) || !Array.isArray(values)) {
@@ -98,38 +113,59 @@ export const serializeContentSecurityPolicy = (policy: ContentSecurityPolicy): s
   return Array.join(serialized, '; ')
 }
 
-type Header = readonly [name: string, value: string]
+type Header = Readonly<[name: string, value: string]>
 
 const header = (
   name: string,
   value: string | false,
   decode: (input: unknown) => Option.Option<string>,
 ): Option.Option<Header> => {
-  if (value === false) return Option.none()
+  if (value === false) {
+    return Option.none()
+  }
   const policy = decode(value)
-  if (Option.isNone(policy)) throw new ConfigError(`Invalid ${name} policy`)
+  if (Option.isNone(policy)) {
+    throw new ConfigError(`Invalid ${name} policy`)
+  }
   return Option.some([name, policy.value])
 }
 
-/** Pure policy serialization. Defaults isolate documents/resources and disclose no referrer. */
+const minimumHstsPreloadAgeSeconds = 31_536_000
+const serializeHsts = ({ maxAge, includeSubDomains, preload }: typeof HstsFields.Type): Header => {
+  if (preload === true && (includeSubDomains !== true || Number.isLessThan(maxAge, minimumHstsPreloadAgeSeconds))) {
+    throw new ConfigError('HSTS preload requires subdomains and at least one year')
+  }
+  return [
+    'strict-transport-security',
+    `max-age=${maxAge}${includeSubDomains === true ? '; includeSubDomains' : ''}${preload === true ? '; preload' : ''}`,
+  ]
+}
+
+/**
+ * Serialize security policies. Defaults isolate documents and resources and disclose no referrer.
+ * @param {Config} config - Policies to override or disable.
+ * @returns {Readonly<Record<string, string>>} Immutable response header fields.
+ */
 export const headers = (config: Config = {}): Readonly<Record<string, string>> => {
-  const policies: readonly Option.Option<Header>[] = [
+  const policies: Option.Option<Header>[] = [
     Option.some(['x-content-type-options', 'nosniff']),
-    header('x-frame-options', config.frameOptions ?? 'DENY', Schema.decodeUnknownOption(FrameOptions)),
-    header('referrer-policy', config.referrerPolicy ?? 'no-referrer', Schema.decodeUnknownOption(ReferrerPolicy)),
+    header('x-frame-options', config.frameOptions ?? 'DENY', decodeFrameOptions),
+    header('referrer-policy', config.referrerPolicy ?? 'no-referrer', decodeReferrerPolicy),
     header(
       'cross-origin-opener-policy',
       config.crossOriginOpenerPolicy ?? 'same-origin',
-      Schema.decodeUnknownOption(CrossOriginOpenerPolicy),
+      decodeCrossOriginOpenerPolicy,
     ),
     header(
       'cross-origin-resource-policy',
       config.crossOriginResourcePolicy ?? 'same-origin',
-      Schema.decodeUnknownOption(CrossOriginResourcePolicy),
+      decodeCrossOriginResourcePolicy,
     ),
     Option.map(Option.fromNullishOr(config.hsts), ({ maxAge, includeSubDomains, preload }) => {
-      const policy = decodeHsts({ maxAge, includeSubDomains, preload })
-      if (Option.isNone(policy)) throw new ConfigError('Invalid HSTS configuration')
+      const policy = decodeHsts({ includeSubDomains, maxAge, preload })
+      if (Option.isNone(policy)) {
+        throw new ConfigError('Invalid HSTS configuration')
+      }
       return serializeHsts(policy.value)
     }),
     Option.map(Option.fromNullishOr(config.contentSecurityPolicy), (policy) => [
@@ -140,17 +176,16 @@ export const headers = (config: Config = {}): Readonly<Record<string, string>> =
   return Object.freeze(Record.fromEntries(Array.getSomes(policies)))
 }
 
-const serializeHsts = ({ maxAge, includeSubDomains, preload }: typeof HstsFields.Type): Header => {
-  if (preload && (!includeSubDomains || Number.isLessThan(maxAge, 31536000)))
-    throw new ConfigError('HSTS preload requires subdomains and at least one year')
-  return [
-    'strict-transport-security',
-    `max-age=${maxAge}${includeSubDomains ? '; includeSubDomains' : ''}${preload ? '; preload' : ''}`,
-  ]
-}
-
-/** Validates once at construction, then applies policy and removes framework disclosure. */
-export const middleware = (config: Config = {}) => {
+/**
+ * Validate once at construction, then apply the policy and remove framework disclosure.
+ * @param {Config} config - Policies to apply to each response.
+ * @returns {HttpMiddleware.HttpMiddleware} Middleware that preserves the handler's errors and service requirements.
+ */
+export const middleware = (
+  config: Config = {},
+): (<E, R>(
+  app: Effect.Effect<HttpServerResponse.HttpServerResponse, E, R>,
+) => Effect.Effect<HttpServerResponse.HttpServerResponse, E, R>) => {
   const policy = headers(config)
   return HttpMiddleware.make(<E, R>(app: Effect.Effect<HttpServerResponse.HttpServerResponse, E, R>) =>
     Effect.map(app, (response) =>
