@@ -1,7 +1,7 @@
 import { Array, Data, Effect, Iterable, Option, Predicate, Record, Result, String, pipe } from 'effect'
 import { HttpServerRequest } from 'effect/http'
 
-import type { HeaderText, ParameterKey, ParameterText, PreferenceValue, QualityValue } from './acceptsGrammar.ts'
+import type { HeaderText, ParameterKey, ParameterText, PreferenceValue, QualityValue } from './accepts-grammar.ts'
 import {
   decodeBoundedAscii,
   decodeOfferList,
@@ -13,8 +13,8 @@ import {
   decodeWireQuality,
   fullQuality,
   refusedQuality,
-} from './acceptsGrammar.ts'
-import { effectiveQuality } from './acceptsQuality.ts'
+} from './accepts-grammar.ts'
+import { effectiveQuality } from './accepts-quality.ts'
 
 /** The four independent HTTP preference grammars. */
 export type Kind = 'mediaType' | 'language' | 'encoding' | 'charset'

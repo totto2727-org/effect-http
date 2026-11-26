@@ -2,7 +2,7 @@ import { Context, Effect, Record } from 'effect'
 import { HttpEffect, HttpServerResponse } from 'effect/http'
 import { describe, expect, test } from 'vite-plus/test'
 
-import * as SecureHeaders from './secureHeaders.ts'
+import * as SecureHeaders from './secure-headers.ts'
 
 describe('secureHeaders pure policies', () => {
   test.each(["'self'\n", "'self'\r", "'self'\r\n"])('rejects terminal CSP controls: %j', (value) => {

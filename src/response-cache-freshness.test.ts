@@ -3,7 +3,7 @@ import { Clock, Effect, MutableRef, Ref } from 'effect'
 import { HttpEffect, HttpServerResponse } from 'effect/http'
 import { describe, expect } from 'vite-plus/test'
 
-import * as ResponseCache from './responseCache.ts'
+import * as ResponseCache from './response-cache.ts'
 
 type WebHandler = (request: Request) => Promise<Response>
 

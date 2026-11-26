@@ -1,8 +1,8 @@
 import { DateTime, Number, Option, Predicate, Result, Schema } from 'effect'
 import type { HttpServerResponse } from 'effect/http'
 
-import * as CacheControl from './cacheControl.ts'
-import * as HttpDate from './internal/httpDate.ts'
+import * as CacheControl from './cache-control.ts'
+import * as HttpDate from './internal/http-date.ts'
 
 const emptyAgeMilliseconds = 0
 export const millisecondsPerSecond = 1000

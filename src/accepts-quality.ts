@@ -1,8 +1,8 @@
 import { Array, Option, Record, String } from 'effect'
 
+import type { QualityValue } from './accepts-grammar.ts'
+import { fullQuality, refusedQuality } from './accepts-grammar.ts'
 import type { Kind, Parsed, Preference } from './accepts.ts'
-import type { QualityValue } from './acceptsGrammar.ts'
-import { fullQuality, refusedQuality } from './acceptsGrammar.ts'
 
 const unmatchedRank = -1
 const wildcardRank = 0

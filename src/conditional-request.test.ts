@@ -4,8 +4,8 @@ import type { Etag } from 'effect/http'
 import { Headers, HttpServerResponse } from 'effect/http'
 import { describe, expect, expectTypeOf, test } from 'vite-plus/test'
 
-import * as ConditionalRequest from './conditionalRequest.ts'
-import type * as HttpDate from './internal/httpDate.ts'
+import * as ConditionalRequest from './conditional-request.ts'
+import type * as HttpDate from './internal/http-date.ts'
 
 const Tags = Data.taggedEnum<Etag.Etag>()
 const etag = Tags.Strong({ value: 'a,b' })

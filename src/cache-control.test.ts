@@ -2,7 +2,7 @@ import { Array, Effect, Result, String } from 'effect'
 import { HttpEffect, HttpServerResponse } from 'effect/http'
 import { describe, expect, expectTypeOf, test } from 'vite-plus/test'
 
-import * as CacheControl from './cacheControl.ts'
+import * as CacheControl from './cache-control.ts'
 
 const parseError = (input: string): string => Result.getOrThrow(Result.flip(CacheControl.parse(input))).reason
 

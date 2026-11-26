@@ -3,7 +3,7 @@ import { Digest } from 'effect/crypto'
 import { Headers, HttpEffect, HttpMiddleware, HttpPlatform, HttpServerResponse } from 'effect/http'
 import { describe, expect, test } from 'vite-plus/test'
 
-import * as ConditionalRequest from './conditionalRequest.ts'
+import * as ConditionalRequest from './conditional-request.ts'
 
 type WebHandler = (request: Request) => Promise<Response>
 const url = 'https://example.com/'

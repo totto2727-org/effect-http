@@ -3,7 +3,7 @@ import { Digest } from 'effect/crypto'
 import type { HttpServerRequest } from 'effect/http'
 import { Etag, Headers, HttpEffect, HttpServerResponse } from 'effect/http'
 
-import * as HttpDate from './internal/httpDate.ts'
+import * as HttpDate from './internal/http-date.ts'
 
 export class ConfigError extends Data.TaggedError('ConditionalRequestConfigError')<{
   message: string

@@ -18,8 +18,8 @@ import {
 } from 'effect'
 import { Cookies, HttpServerRequest, HttpServerResponse } from 'effect/http'
 
-import type { Freshness } from './cacheFreshness.ts'
-import { deriveFreshness, millisecondsPerSecond } from './cacheFreshness.ts'
+import type { Freshness } from './cache-freshness.ts'
+import { deriveFreshness, millisecondsPerSecond } from './cache-freshness.ts'
 
 /* oxlint-disable rules/no-readonly -- The exported interface preserves declaration merging and immutable cache configuration. */
 export interface Options {

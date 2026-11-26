@@ -6,12 +6,12 @@ import { HttpEffect, HttpServerResponse } from 'effect/http'
 import { describe, expect } from 'vite-plus/test'
 
 import * as Accepts from './accepts.ts'
-import * as CacheControl from './cacheControl.ts'
-import * as ConditionalRequest from './conditionalRequest.ts'
+import * as CacheControl from './cache-control.ts'
+import * as ConditionalRequest from './conditional-request.ts'
 import * as Csrf from './csrf.ts'
-import * as ResponseCache from './responseCache.ts'
+import * as ResponseCache from './response-cache.ts'
 // oxlint-disable-next-line import/max-dependencies -- This integration test verifies all six HTTP utilities together.
-import * as SecureHeaders from './secureHeaders.ts'
+import * as SecureHeaders from './secure-headers.ts'
 
 type WebHandler = (request: Request) => Promise<Response>
 const increment = (value: number): number => value + 1
